@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+backups/
+logs/
+vibe_session.json
+VIBE_DASHBOARD.html
+*.bat
