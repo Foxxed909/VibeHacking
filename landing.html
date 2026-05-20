@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VibeHacking &mdash; Pentest Framework</title>
+  <style>
+    :root {
+      --bg:       #070b0f;
+      --surface:  #0d1117;
+      --border:   #1e2d3d;
+      --green:    #00ff87;
+      --green-dim:#00cc6a;
+      --red:      #ff4d4d;
+      --orange:   #ff8c00;
+      --yellow:   #ffe066;
+      --blue:     #4fa3ff;
+      --purple:   #c678dd;
+      --cyan:     #00e5ff;
+      --pink:     #ff4da6;
+      --text:     #cdd9e5;
+      --muted:    #5c6e7a;
+      --mono:     'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,255,135,0.013) 2px,
+        rgba(0,255,135,0.013) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    a { color: var(--green); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* HEADER */
+    header {
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #0d1117 0%, var(--bg) 100%);
+      padding: 48px 32px 36px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    header::before {
+      content: '';
+      position: absolute;
+      top: -60px; left: 50%;
+      transform: translateX(-50%);
+      width: 700px; height: 220px;
+      background: radial-gradient(ellipse, rgba(0,255,135,0.07) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .ascii-logo {
+      color: var(--green);
+      font-size: 11px;
+      line-height: 1.3;
+      letter-spacing: 0;
+      white-space: pre;
+      display: inline-block;
+      text-shadow: 0 0 14px rgba(0,255,135,0.45);
+      animation: flicker 7s infinite;
+    }
+
+    @keyframes flicker {
+      0%,95%,100% { opacity: 1; }
+      96% { opacity: 0.8; }
+      97% { opacity: 1; }
+      98.5% { opacity: 0.88; }
+    }
+
+    .tagline {
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+    }
+    .tagline span { color: var(--green); }
+
+    /* STATS BAR */
+    .stats {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-wrap: wrap;
+    }
+
+    .stat { display: flex; align-items: baseline; gap: 8px; }
+
+    .stat-num {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--green);
+      text-shadow: 0 0 8px rgba(0,255,135,0.4);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    /* PROMPT BAR */
+    .prompt-bar {
+      background: #0a0f14;
+      border-bottom: 1px solid var(--border);
+      padding: 10px 32px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .prompt-bar .ps  { color: var(--green); }
+    .prompt-bar .cmd { color: var(--text); }
+
+    .cursor {
+      display: inline-block;
+      width: 8px; height: 14px;
+      background: var(--green);
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* MAIN */
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* SECTION HEADER */
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 44px 0 16px;
+    }
+
+    .section-header::before {
+      content: '//';
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .section-line {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .section-badge {
+      font-size: 10px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+
+    /* GRID */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 12px;
+    }
+
+    /* CARD */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px 18px;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+      position: relative;
+      overflow: hidden;
+      cursor: default;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 3px; height: 100%;
+      background: var(--accent, var(--green));
+      opacity: 0.75;
+    }
+
+    .card:hover {
+      border-color: var(--accent, var(--green));
+      box-shadow: 0 0 18px rgba(0,255,135,0.06), 0 4px 20px rgba(0,0,0,0.45);
+      transform: translateY(-2px);
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .card-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-name .icon { font-size: 16px; }
+
+    .badge {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      padding: 2px 7px;
+      border-radius: 3px;
+      font-weight: 600;
+      border: 1px solid currentColor;
+    }
+
+    .badge-crit { color: var(--red);    }
+    .badge-warn { color: var(--orange); }
+    .badge-info { color: var(--blue);   }
+    .badge-util { color: var(--purple); }
+    .badge-ps   { color: #5ebdff; }
+    .badge-cyan { color: var(--cyan);   }
+    .badge-pink { color: var(--pink);   }
+    .badge-new  { color: var(--green); animation: pulse-badge 2s ease-in-out infinite; }
+
+    @keyframes pulse-badge {
+      0%,100% { opacity: 1; }
+      50%     { opacity: 0.5; }
+    }
+
+    .card-desc {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+      line-height: 1.55;
+    }
+
+    .cmd-block {
+      background: #0a0f14;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    .cmd-block .dollar { color: var(--green); user-select: none; }
+    .cmd-block .flag   { color: var(--blue);   }
+    .cmd-block .val    { color: var(--yellow);  }
+    .cmd-block .tool   { color: #fff; font-weight: 600; }
+
+    /* CATEGORY ACCENT COLOURS */
+    .cat-new      .card { --accent: var(--green);  }
+    .cat-recon    .card { --accent: var(--blue);   }
+    .cat-auth     .card { --accent: var(--orange); }
+    .cat-vuln     .card { --accent: var(--red);    }
+    .cat-inject   .card { --accent: #ff1f5a;       }
+    .cat-token    .card { --accent: var(--cyan);   }
+    .cat-advanced .card { --accent: var(--pink);   }
+    .cat-load     .card { --accent: var(--purple); }
+    .cat-report   .card { --accent: #ffb347;       }
+    .cat-util     .card { --accent: var(--muted);  }
+
+    /* GOLDEN RULE */
+    .golden-rule {
+      background: linear-gradient(135deg, #0d1117 0%, #0a0f14 100%);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--green);
+      border-radius: 6px;
+      padding: 20px 24px;
+      margin: 44px 0 0;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .golden-rule .glyph { font-size: 24px; flex-shrink: 0; line-height: 1; margin-top: 2px; }
+    .golden-rule-title  { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--green); margin-bottom: 6px; }
+    .golden-rule-body   { font-size: 13px; color: var(--text); }
+
+    /* FOOTER */
+    footer {
+      text-align: center;
+      border-top: 1px solid var(--border);
+      padding: 24px 32px;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+    footer span { color: var(--green); }
+
+    @media (max-width: 600px) {
+      .ascii-logo { font-size: 7px; }
+      .stats { gap: 20px; }
+      .grid  { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <pre class="ascii-logo">
+ ██╗   ██╗██╗██████╗ ███████╗██╗  ██╗ █████╗  ██████╗██╗  ██╗██╗███╗   ██╗ ██████╗
+ ██║   ██║██║██╔══██╗██╔════╝██║  ██║██╔══██╗██╔════╝██║ ██╔╝██║████╗  ██║██╔════╝
+ ██║   ██║██║██████╔╝█████╗  ███████║███████║██║     █████╔╝ ██║██╔██╗ ██║██║  ███╗
+ ╚██╗ ██╔╝██║██╔══██╗██╔══╝  ██╔══██║██╔══██║██║     ██╔═██╗ ██║██║╚██╗██║██║   ██║
+  ╚████╔╝ ██║██████╔╝███████╗██║  ██║██║  ██║╚██████╗██║  ██╗██║██║ ╚████║╚██████╔╝
+   ╚═══╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝</pre>
+  <p class="tagline">Black-box pentest framework &mdash; <span>built for our own apps</span> &mdash; black-box only &#x1F5A4;</p>
+</header>
+
+<div class="stats">
+  <div class="stat"><span class="stat-num">41</span><span class="stat-label">Tools</span></div>
+  <div class="stat"><span class="stat-num">10</span><span class="stat-label">New / Custom</span></div>
+  <div class="stat"><span class="stat-num">10</span><span class="stat-label">Categories</span></div>
+  <div class="stat"><span class="stat-num">0</span><span class="stat-label">3rd-party deps</span></div>
+  <div class="stat"><span class="stat-num">v1.0.0</span><span class="stat-label">Version</span></div>
+</div>
+
+<div class="prompt-bar">
+  <span class="ps">PS VibeHacking&gt;</span>
+  <span class="cmd">python TOOLS/&lt;tool&gt;.py --url http://localhost:&lt;port&gt;</span>
+  <span class="cursor"></span>
+</div>
+
+<main>
+
+  <!-- NEW / CUSTOM TOOLS -->
+  <div class="section-header">
+    <span class="section-title">Custom Tools</span>
+    <div class="section-line"></div>
+    <span class="section-badge">NEW &middot; 5</span>
+  </div>
+  <div class="grid cat-new">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F47B;</span>phantom</div><span class="badge badge-new">NEW</span></div>
+      <p class="card-desc">Cookie &amp; session token analyzer. Checks HttpOnly, Secure, SameSite flags, decodes JWT payloads, detects <code>alg:none</code> bypass, and flags short or predictable token values.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">phantom.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/login</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F310;</span>corscan</div><span class="badge badge-new">NEW</span></div>
+      <p class="card-desc">CORS misconfiguration scanner. Sends 6 spoofed Origin headers &mdash; flags reflected origins with credentials, wildcard + credentials, and any unexpected origin reflections.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">corscan.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/api/data</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x21A9;&#xFE0F;</span>redirect</div><span class="badge badge-new">NEW</span></div>
+      <p class="card-desc">Open redirect scanner. Tests 15 redirect params (<code>next</code>, <code>url</code>, <code>return</code>, <code>redirect_uri</code>&hellip;). Tracks the actual Location header to detect real redirects vs body reflections.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">redirect.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/login</span><span class="flag"> --canary</span> <span class="val">https://evil.com</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x23F1;&#xFE0F;</span>timebomb</div><span class="badge badge-new">NEW</span></div>
+      <p class="card-desc">Timing attack detector. Runs 4 probes (valid user, non-existent user, empty creds, SQLi) across N rounds. Compares median response times against baseline to surface user-enumeration leaks.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">timebomb.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/login</span><span class="flag"> --rounds</span> <span class="val">10</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F577;&#xFE0F;</span>spider</div><span class="badge badge-new">NEW</span></div>
+      <p class="card-desc">Attack surface crawler. Extracts links from <code>href</code>, <code>src</code>, <code>action</code>, <code>fetch()</code>, <code>axios.*</code> calls. Same-origin only. Detects forms and outputs a full route map with status codes.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">spider.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000</span><span class="flag"> --depth</span> <span class="val">3</span></div>
+    </div>
+
+  </div>
+
+  <!-- RECON & DISCOVERY -->
+  <div class="section-header">
+    <span class="section-title">Recon &amp; Discovery</span>
+    <div class="section-line"></div>
+    <span class="section-badge">6 tools</span>
+  </div>
+  <div class="grid cat-recon">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F441;&#xFE0F;</span>ghost</div><span class="badge badge-info">RECON</span></div>
+      <p class="card-desc">Sensitive file finder. Probes 30 common paths &mdash; <code>.env</code>, <code>config.json</code>, <code>/admin</code>, <code>/.git/config</code>, backup files, debug endpoints. Flags anything returning non-404.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ghost.py</span><span class="flag"> --url</span> <span class="val">http://localhost:5000</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F50D;</span>api_finder</div><span class="badge badge-info">RECON</span></div>
+      <p class="card-desc">API endpoint discovery. Fuzzes common REST path patterns across multiple prefixes (<code>/api</code>, <code>/v1</code>, <code>/internal</code>). Logs every non-404 response with status code and content type.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">api_finder.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x2601;&#xFE0F;</span>cloud_scout</div><span class="badge badge-info">RECON</span></div>
+      <p class="card-desc">Cloud surface prober. Hits common dashboard and admin routes to detect publicly accessible cloud control surfaces and misconfigured access controls.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">cloud_scout.py</span><span class="flag"> --url</span> <span class="val">http://localhost:4000</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4E1;</span>vibe_recon</div><span class="badge badge-info">NETWORK</span></div>
+      <p class="card-desc">WiFi scanner. Uses <code>netsh wlan</code> to list visible SSIDs, signal strength, and encryption type. Maps the local wireless attack surface without any extra tooling.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">vibe_recon.py</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F50C;</span>api_check</div><span class="badge badge-info">RECON</span></div>
+      <p class="card-desc">Single endpoint checker. Fires one request and reports status code, content type, response time, and body preview. Quick sanity-check for any specific route.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">api_check.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/health</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F50A;</span>vox</div><span class="badge badge-info">NETWORK</span></div>
+      <p class="card-desc">ARP intruder detector. Parses <code>arp -a</code> output and monitors the ARP table for new or unexpected MAC addresses appearing on the local network segment.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">vox.py</span></div>
+    </div>
+
+  </div>
+
+  <!-- AUTH & SESSION -->
+  <div class="section-header">
+    <span class="section-title">Auth &amp; Session Testing</span>
+    <div class="section-line"></div>
+    <span class="section-badge">6 tools</span>
+  </div>
+  <div class="grid cat-auth">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F6AA;</span>leep</div><span class="badge badge-warn">AUTH</span></div>
+      <p class="card-desc">Auth bypass tester. Hits protected routes without a token, with a tampered token, and with common bypass payloads. Detects login redirects hidden inside 200 responses.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">leep.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000</span><span class="flag"> --paths</span> <span class="val">/api/admin /dashboard /api/users</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4CB;</span>aukdoc</div><span class="badge badge-warn">AUTH</span></div>
+      <p class="card-desc">8-vector auth boundary auditor. Checks: no token, expired token, wrong signature, role escalation, IDOR, mass assignment, missing rate limiting, and suspicious 200 responses.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">aukdoc.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/api</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F6E1;&#xFE0F;</span>authdoc</div><span class="badge badge-warn">WAF</span></div>
+      <p class="card-desc">WAF auditor. Fires SQLi, XSS, path traversal, and shell payloads. Classifies responses as blocked (WAF active), flagged (soft block), or passed through (unprotected).</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">authdoc.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/search</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F3B2;</span>random_roll</div><span class="badge badge-warn">AUTH</span></div>
+      <p class="card-desc">Password policy auditor. Submits common weak passwords, then tests the policy against short, long, and special-character inputs. Identifies lenient or entirely absent validation.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">random_roll.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/auth/signup</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F511;</span>axios</div><span class="badge badge-warn">IDOR</span></div>
+      <p class="card-desc">IDOR scanner. Iterates object IDs across common API patterns (<code>/api/users/:id</code>, <code>/api/orders/:id</code>). Flags IDs that return data without proper ownership checks.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">axios.py</span><span class="flag"> --url</span> <span class="val">http://localhost:5000</span><span class="flag"> --range</span> <span class="val">1 20</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x2601;&#xFE0F;</span>cloud_auditor</div><span class="badge badge-ps">PS1</span></div>
+      <p class="card-desc">PowerShell auth auditor. Checks cloud dashboard and settings routes for unauthenticated access. Flags HTTP 200 on pages that should require a valid session.</p>
+      <div class="cmd-block"><span class="dollar">$</span> .\TOOLS\<span class="tool">cloud_auditor.ps1</span><span class="flag"> -baseUrl</span> <span class="val">http://localhost:4000</span></div>
+    </div>
+
+  </div>
+
+  <!-- VULNERABILITY SCANNING -->
+  <div class="section-header">
+    <span class="section-title">Vulnerability Scanning</span>
+    <div class="section-line"></div>
+    <span class="section-badge">5 tools</span>
+  </div>
+  <div class="grid cat-vuln">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F489;</span>vibe_api</div><span class="badge badge-crit">INJECT</span></div>
+      <p class="card-desc">JSON endpoint fuzzer. Fires 7 payloads per field &mdash; SQLi, XSS, buffer overflow, type mismatch, numeric edge cases, null values, and email-field SQLi. Reports any anomalous response.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">vibe_api.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/auth/signup</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F512;</span>vibe_headers</div><span class="badge badge-crit">HEADERS</span></div>
+      <p class="card-desc">Security header checker. Scores 7 headers: CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection. Returns a 0&ndash;100% hardening score.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">vibe_headers.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F300;</span>fuzz_vibe</div><span class="badge badge-crit">FUZZ</span></div>
+      <p class="card-desc">URL parameter fuzzer. Appends 10 payloads to query strings &mdash; SQLi, XSS, path traversal, null bytes, oversized strings. Detects anomalous responses compared to a clean baseline.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">fuzz_vibe.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/search</span><span class="flag"> --param</span> <span class="val">q</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4A5;</span>exploit_final</div><span class="badge badge-crit">XSS</span></div>
+      <p class="card-desc">XSS injector demo. Submits stored XSS payloads into common input fields. Verifies reflection or persistence by re-fetching the target page after injection.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">exploit_final.py</span><span class="flag"> --url</span> <span class="val">http://localhost:5000/api/comment</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F3E6;</span>exploit_vault</div><span class="badge badge-crit">XSS</span></div>
+      <p class="card-desc">localStorage exfil demo. Generates a JavaScript payload that reads <code>localStorage</code> and POSTs it to a logging endpoint. PoC-only &mdash; use on your own apps.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">exploit_vault.py</span><span class="flag"> --log-url</span> <span class="val">http://localhost:9001/log</span></div>
+    </div>
+
+  </div>
+
+  <!-- INJECTION LAB -->
+  <div class="section-header">
+    <span class="section-title">Injection Lab</span>
+    <div class="section-line"></div>
+    <span class="section-badge">NEW &middot; 4 tools</span>
+  </div>
+  <div class="grid cat-inject">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1FA78;</span>sqli_probe</div><span class="badge badge-crit">SQLi</span></div>
+      <p class="card-desc">Deep SQL injection prober. Runs three modes: error-based (DB error strings in response), boolean-blind (true vs false diff), and time-based blind (sleep payload delta). Reports which technique landed and infers the database engine.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">sqli_probe.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/user</span><span class="flag"> --param</span> <span class="val">id</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F30D;</span>ssrf_map</div><span class="badge badge-crit">SSRF</span></div>
+      <p class="card-desc">Server-Side Request Forgery probe. Injects internal targets (<code>169.254.169.254</code>, <code>localhost</code>, cloud metadata URLs) into common URL-accepting parameters. Flags any non-timeout response that leaks internal data or headers.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ssrf_map.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/api/fetch</span><span class="flag"> --param</span> <span class="val">target</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4E8;</span>header_inject</div><span class="badge badge-crit">HEADER INJ</span></div>
+      <p class="card-desc">HTTP header injection tester. Sends spoofed <code>Host</code>, <code>X-Forwarded-For</code>, <code>X-Forwarded-Host</code>, and <code>X-Original-URL</code> headers. Detects host header poisoning, cache poisoning vectors, and IP bypass tricks.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">header_inject.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/admin</span><span class="flag"> --spoof-ip</span> <span class="val">127.0.0.1</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4E2;</span>info_leak</div><span class="badge badge-warn">INFO LEAK</span></div>
+      <p class="card-desc">Information leakage detector. Triggers deliberate bad requests and scans responses for stack traces, framework versions, file paths, SQL error strings, and internal IPs leaking through verbose error pages.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">info_leak.py</span><span class="flag"> --url</span> <span class="val">http://localhost:5000</span></div>
+    </div>
+
+  </div>
+
+  <!-- TOKEN & IDENTITY -->
+  <div class="section-header">
+    <span class="section-title">Token &amp; Identity Abuse</span>
+    <div class="section-line"></div>
+    <span class="section-badge">NEW &middot; 3 tools</span>
+  </div>
+  <div class="grid cat-token">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F513;</span>jwt_forge</div><span class="badge badge-cyan">JWT</span></div>
+      <p class="card-desc">JWT weak-secret &amp; algorithm confusion tester. Tries <code>alg:none</code> bypass, brute-forces common weak secrets, and tests RS256&rarr;HS256 algorithm confusion. Sends forged tokens to protected endpoints and reports any that return 200.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">jwt_forge.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/me</span><span class="flag"> --token</span> <span class="val">eyJhbGci...</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F465;</span>enum_users</div><span class="badge badge-cyan">ENUM</span></div>
+      <p class="card-desc">User enumeration detector. Probes registration and password-reset flows with known vs unknown emails. Compares response body, status code, and timing to identify endpoints that reveal whether an account exists.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">enum_users.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/api/auth/reset</span><span class="flag"> --known</span> <span class="val">admin@app.com</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F52B;</span>rate_gun</div><span class="badge badge-cyan">RATE LIMIT</span></div>
+      <p class="card-desc">Rate limit &amp; account lockout tester. Rapid-fires N login attempts with a known-bad password. Detects missing lockout, absent 429 responses, and CAPTCHA bypass. Reports the exact request count before throttling kicks in &mdash; or if it never does.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">rate_gun.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/login</span><span class="flag"> --shots</span> <span class="val">50</span></div>
+    </div>
+
+  </div>
+
+  <!-- ADVANCED ATTACKS -->
+  <div class="section-header">
+    <span class="section-title">Advanced Attacks</span>
+    <div class="section-line"></div>
+    <span class="section-badge">NEW &middot; 3 tools</span>
+  </div>
+  <div class="grid cat-advanced">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F5B1;&#xFE0F;</span>clickjack</div><span class="badge badge-pink">CLICKJACK</span></div>
+      <p class="card-desc">Clickjacking vulnerability checker. Tests whether a page can be embedded in an <code>&lt;iframe&gt;</code> by checking <code>X-Frame-Options</code> and <code>Content-Security-Policy: frame-ancestors</code>. Generates a live PoC iframe page if vulnerable.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">clickjack.py</span><span class="flag"> --url</span> <span class="val">http://localhost:4000/dashboard</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4E6;</span>mass_assign</div><span class="badge badge-pink">MASS ASSIGN</span></div>
+      <p class="card-desc">Mass assignment &amp; parameter pollution tester. Sends extra undocumented fields in JSON payloads (<code>role</code>, <code>isAdmin</code>, <code>verified</code>, <code>credits</code>). Detects when the server silently accepts and persists fields it shouldn&rsquo;t.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">mass_assign.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/auth/signup</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F50C;</span>ws_probe</div><span class="badge badge-pink">WEBSOCKET</span></div>
+      <p class="card-desc">WebSocket security prober. Connects to a <code>ws://</code> endpoint without auth headers, sends malformed frames, oversized payloads, and injection strings. Detects missing auth on upgrade, verbose error bleed, and DoS vectors.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ws_probe.py</span><span class="flag"> --url</span> <span class="val">ws://localhost:8080/socket</span></div>
+    </div>
+
+  </div>
+
+  <!-- LOAD & STRESS -->
+  <div class="section-header">
+    <span class="section-title">Load &amp; Stress Testing</span>
+    <div class="section-line"></div>
+    <span class="section-badge">2 tools</span>
+  </div>
+  <div class="grid cat-load">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F329;&#xFE0F;</span>storm</div><span class="badge badge-util">STRESS</span></div>
+      <p class="card-desc">Python stress tester. Spawns concurrent threads, each firing repeated requests. Tracks response codes, latency distribution, and error rates to surface breaking points.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">storm.py</span><span class="flag"> --url</span> <span class="val">http://localhost:3000/api/login</span><span class="flag"> --threads</span> <span class="val">20</span><span class="flag"> --requests</span> <span class="val">200</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x26A1;</span>maelstrom</div><span class="badge badge-util">GO &middot; HIGH PERF</span></div>
+      <p class="card-desc">Go-binary load tester. Orders of magnitude faster than Python threads. Supports custom concurrency, request counts, and headers. Use for real breaking-point tests at volume.</p>
+      <div class="cmd-block"><span class="dollar">$</span> TOOLS\maelstrom\<span class="tool">maelstrom.exe</span><span class="flag"> -url</span> <span class="val">http://localhost:8080</span><span class="flag"> -c</span> <span class="val">50</span><span class="flag"> -n</span> <span class="val">1000</span></div>
+    </div>
+
+  </div>
+
+  <!-- PoC & REPORTING -->
+  <div class="section-header">
+    <span class="section-title">PoC &amp; Report Generation</span>
+    <div class="section-line"></div>
+    <span class="section-badge">2 tools</span>
+  </div>
+  <div class="grid cat-report">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4C4;</span>poc_gen</div><span class="badge badge-crit">PoC</span></div>
+      <p class="card-desc">XSS &amp; CSRF proof-of-concept generator. Takes a vulnerable URL and produces a self-contained HTML file that demonstrates the exploit. Saved to <code>VibeHacking/</code> root for easy sharing.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">poc_gen.py</span><span class="flag"> --url</span> <span class="val">http://localhost:5000/api/comment</span><span class="flag"> --type</span> <span class="val">xss</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4CA;</span>lmx</div><span class="badge badge-info">DASHBOARD</span></div>
+      <p class="card-desc">Session dashboard generator. Reads all tool logs and outputs <code>VIBE_DASHBOARD.html</code> &mdash; an HTML summary of every finding, tool run, and severity breakdown for the session.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">lmx.py</span><span class="flag"> --target</span> <span class="val">http://localhost:3000</span></div>
+    </div>
+
+  </div>
+
+  <!-- UTILITIES -->
+  <div class="section-header">
+    <span class="section-title">Utilities &amp; Maintenance</span>
+    <div class="section-line"></div>
+    <span class="section-badge">8 tools</span>
+  </div>
+  <div class="grid cat-util">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F5D1;&#xFE0F;</span>void</div><span class="badge badge-util">DB</span></div>
+      <p class="card-desc">Database cleanup tool. Removes SQLi and XSS test payloads injected during a session from the target SQLite database. Pass the <code>.db</code> path explicitly &mdash; no defaults.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">void.py</span><span class="flag"> --db</span> <span class="val">../Projects/WestAPI/db.sqlite</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1FAB6;</span>seagull</div><span class="badge badge-util">LOGS</span></div>
+      <p class="card-desc">Log noise filter. Reads session logs and strips out informational chatter, leaving only warnings and critical findings for a clean post-session review.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">seagull.py</span><span class="flag"> --log</span> <span class="val">logs/ghost_session.log</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4BE;</span>backer</div><span class="badge badge-util">BACKUP</span></div>
+      <p class="card-desc">Backup utility. Snapshots all logs and session data to a timestamped directory under <code>VibeHacking/backups/</code> &mdash; run before each new testing session.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">backer.py</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F680;</span>ash</div><span class="badge badge-util">DEPLOY</span></div>
+      <p class="card-desc">Deployment agent. Validates and stages project files from a source directory for deployment. Pass <code>--dir</code> to specify the project root to process.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ash.py</span><span class="flag"> --dir</span> <span class="val">../Projects/WestAPI</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4F8;</span>codex_boot</div><span class="badge badge-util">SNAPSHOT</span></div>
+      <p class="card-desc">Session snapshot generator. Reads <code>AGENTS.md</code> and <code>codex.md</code> to produce a structured context file for handing off or resuming a session later.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">codex_boot.py</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F527;</span>patch_hynest</div><span class="badge badge-ps">PS1 / PY</span></div>
+      <p class="card-desc">Project patcher. Applies a known fix set to a target project directory. Available as Python and PowerShell. Pass <code>--dir</code> / <code>-baseDir</code> to target.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">patch_hynest.py</span><span class="flag"> --dir</span> <span class="val">../Projects/WestAPI</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F4E6;</span>install_tools</div><span class="badge badge-ps">PS1</span></div>
+      <p class="card-desc">Toolchain installer. Sets up the VibeHacking environment from the repo &mdash; creates <code>.venv</code>, verifies Python version, and confirms the toolchain is ready to run.</p>
+      <div class="cmd-block"><span class="dollar">$</span> .\TOOLS\<span class="tool">install_tools.ps1</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x25B6;&#xFE0F;</span>vibe.py</div><span class="badge badge-info">CLI</span></div>
+      <p class="card-desc">Main CLI entry point. Lists all registered tools, launches any tool by name, and manages the current session state &mdash; the single command to start any session.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python <span class="tool">vibe.py</span><span class="flag"> list</span></div>
+    </div>
+
+  </div>
+
+  <div class="golden-rule">
+    <div class="glyph">&#x1F5A4;</div>
+    <div>
+      <div class="golden-rule-title">The One Golden Rule</div>
+      <div class="golden-rule-body">
+        Never read the project&rsquo;s source files directly. That&rsquo;s cheating.
+        Go in blind &mdash; just like a real attacker would. Everything we learn, we learn through the live running app.
+        Black-box only.
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <span>VibeHacking v1.0.0</span> &nbsp;&middot;&nbsp; Built by BlackPC, Vine &amp; Foxxino Inc. &nbsp;&middot;&nbsp;
+  No harm. No foul. Just good, clean chaos. &nbsp;&middot;&nbsp;
+  <a href="https://github.com/Foxxed909/VibeHacking">github.com/Foxxed909/VibeHacking</a>
+</footer>
+
+</body>
+</html>
