@@ -1,8 +1,10 @@
 import sys
 import urllib.request
+import urllib.error
 import urllib.parse
 import json
 import os
+import socket
 import datetime
 
 for stream in (sys.stdout, sys.stderr):
@@ -80,5 +82,9 @@ class VibeTool:
                 return response.getcode(), response.read().decode('utf-8', errors='ignore'), dict(response.info())
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode('utf-8', errors='ignore'), dict(e.headers)
+        except urllib.error.URLError as e:
+            return 0, f"[connection-error] {e.reason}", {}
+        except socket.timeout:
+            return 0, "[timeout] request timed out", {}
         except Exception as e:
-            return 0, str(e), {}
+            return 0, f"[error] {e}", {}

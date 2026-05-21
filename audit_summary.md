@@ -2,7 +2,7 @@
 
 ## 🔑 Master API Key Provisioned
 The **Vibe Hacker Toolset** has been authorized with a high-privilege access key:
-- **Key ID:** `vibe_admin_k3y_999_x`
+- **Key ID:** `[REDACTED]`
 - **Scope:** Root Access to all tools (`ghost`, `axios`, `leep`, `aukdoc`, `lmx`).
 - **Authorization:** `vibe_session.json` updated and synchronized.
 

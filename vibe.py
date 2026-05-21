@@ -3,7 +3,7 @@ import argparse
 import subprocess
 import os
 import json
-from urllib.parse import urlparse
+import datetime
 
 VERSION = "0.5.0"
 
@@ -23,21 +23,15 @@ def run_tool(args):
     return run_command([sys.executable, *args])
 
 
-def leep_args_from_url(url):
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if not path_parts:
-        path_parts = [""]
-    return ["--port", str(port), "--path", *path_parts]
-
 def run_vibe():
     parser = argparse.ArgumentParser(description=f"🛡️ VIBE HACKING v{VERSION} - Central Command Interface")
+    parser.add_argument('--version', action='version', version=f'VIBE HACKING {VERSION}')
     subparsers = parser.add_subparsers(dest="command")
 
     # Command: scan
     scan_parser = subparsers.add_parser("scan", help="Run an automated security audit on a URL")
     scan_parser.add_argument("url", help="Target URL (e.g. http://127.0.0.1:5500/)")
+    scan_parser.add_argument("--extended", action="store_true", help="Also run WAF detection, SSL audit, and SQL probe")
 
     # Command: report
     report_parser = subparsers.add_parser("report", help="Generate the LMX Executive Dashboard")
@@ -107,7 +101,7 @@ def run_vibe():
         
         # Save current target to session
         with open("vibe_session.json", "w") as f:
-            json.dump({"target": args.url, "last_scan": str(os.times())}, f)
+            json.dump({"target": args.url, "last_scan": datetime.datetime.now().isoformat()}, f)
 
         # Chain together multiple tools for a "Deep Scan"
         print("[*] Phase 1: Header Security Audit...")
@@ -117,8 +111,16 @@ def run_vibe():
         run_tool(["TOOLS/ghost.py", "--url", args.url])
         
         print("[*] Phase 3: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", *leep_args_from_url(args.url)])
-        
+        run_tool(["TOOLS/leep.py", "--url", args.url])
+
+        if args.extended:
+            print("[*] Phase 4 (Extended): WAF Detection...")
+            run_tool(["TOOLS/waf_detect.py", "--url", args.url])
+            print("[*] Phase 5 (Extended): SSL/TLS Audit...")
+            run_tool(["TOOLS/ssl_audit.py", "--url", args.url])
+            print("[*] Phase 6 (Extended): SQL Injection Probe...")
+            run_tool(["TOOLS/sql_probe.py", "--url", args.url])
+
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 
     elif args.command == "report":
@@ -175,21 +177,24 @@ def run_vibe():
             print("[-] No active session found.")
 
     elif args.command == "list":
+        import re
         tools_dir = "TOOLS"
         print("[*] Available Professional Toolset:")
         if os.path.exists(os.path.join(tools_dir, "maelstrom")):
-            print("  -> maelstrom - Go private-target load tester")
-        for t in os.listdir(tools_dir):
-            if t.endswith(".py") and t != "vibe_core.py":
+            print("  -> maelstrom                  - Go private-target load tester")
+        for t in sorted(os.listdir(tools_dir)):
+            if t.endswith(".py") and t not in ("vibe_core.py",):
                 description = ""
-                # Quick peek at first few lines for description
                 try:
-                    with open(os.path.join(tools_dir, t), 'r') as f:
-                        content = f.read(500)
-                        if "description" in content.lower():
-                            description = " - Functional Tool"
-                except: pass
-                print(f"  -> {t.replace('.py', '')}{description}")
+                    with open(os.path.join(tools_dir, t), 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read(4000)
+                    m = re.search(r'super\(\).__init__\([^,]+,\s*["\'](.+?)["\']\)', content)
+                    if m:
+                        description = m.group(1)
+                except Exception:
+                    pass
+                name = t.replace('.py', '')
+                print(f"  -> {name:<28} {('- ' + description) if description else ''}")
 
     elif args.command == "codex":
         cmd = ["TOOLS/codex_boot.py"]

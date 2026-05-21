@@ -1,0 +1,8 @@
+# VibeHacking Framework — Dependency Manifest
+# Python >= 3.8 required
+#
+# All tools use the Python standard library only. No third-party packages needed.
+# stdlib modules used: urllib, json, os, sys, argparse, threading, ssl, socket,
+#                      base64, hmac, hashlib, re, datetime, time, subprocess
+#
+# Optional: Go toolchain required only for TOOLS/maelstrom/ (go >= 1.21)
