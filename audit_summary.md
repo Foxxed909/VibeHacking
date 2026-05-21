@@ -29,8 +29,7 @@ By analyzing your "Served Projects" via browser-like probing (without reading lo
 
 ### 2. [INFO LEAK] `JWT_SECRET` in `README.md` (Port 6002)
 - **Vulnerability:** The `zarrpple-cloud` frontend server (6002) exposes the project's documentation.
-- **Evidence:** Reading `/README.md` revealed a hardcoded secret: 
-  `zarrpple_ultra_secret_key_2026`.
+- **Evidence:** Reading `/README.md` revealed a hardcoded secret: `[REDACTED]`.
 - **Impact:** Allows forging admin JSON Web Tokens (JWT) for the backend API.
 
 ---
