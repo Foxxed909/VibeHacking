@@ -4,6 +4,7 @@ import argparse
 import ssl
 import socket
 import datetime
+import warnings
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +82,7 @@ class SSLAudit(VibeTool):
             return
 
         # Test for deprecated TLS versions
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
         for tls_ver, label in DEPRECATED_PROTOS.items():
             try:
                 old_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
