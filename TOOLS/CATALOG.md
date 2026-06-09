@@ -1,13 +1,13 @@
 # 🧰 VibeHacking Tool Catalog
 
 Every tool in `TOOLS/`, grouped by what it does. All tools inherit from
-[`vibe_core.py`](vibe_core.py) (shared HTTP client, logging, session, banner)
-and run standalone via `python TOOLS/<tool>.py --url <target>` or through the
-`vibe.py` orchestrator.
+[`vibe_core.py`](vibe_core.py) (shared HTTP client, privacy redaction, logging,
+session, banner) and run standalone via `python TOOLS/<tool>.py --url <target>`
+or through the `vibe.py` orchestrator.
 
 > Scope reminder: these are for **your own apps** and **in-scope, authorized
-> bug-bounty targets** only. Load/stress tools are restricted to localhost and
-> private targets by design.
+> bug-bounty targets** only. Load/stress tools are restricted to localhost,
+> private targets, and exact public hosts you explicitly authorize.
 
 ---
 
@@ -67,14 +67,15 @@ Find the things that should never have left the server.
 | `key_stealer` | Multi-vector API-key extraction suite |
 | `credit_drain` | API credit-drain / rate-limit auditor |
 
-## 🌩️ Load & Stress — _localhost / private targets only_
-Capacity and rate-limit testing. **Public targets are intentionally blocked.**
+## Load & Stress - _localhost, private, or explicitly trusted targets only_
+Capacity and rate-limit testing. Public hosts require an exact entry in
+`authorized_targets.txt` plus confirmation.
 
 | Tool | Role |
 |------|------|
-| `storm` | Localhost traffic stressor (Python) |
+| `storm` | Authorized-target traffic stressor (Python) |
 | `vibe_api` | JSON endpoint stressor |
-| `maelstrom` | Go private-target load tester (`vibe.py maelstrom …`) |
+| `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`) |
 
 ## 📊 Reporting & Session
 Turn findings into receipts; manage the workspace.
@@ -86,6 +87,7 @@ Turn findings into receipts; manage the workspace.
 | `backer` | Session-data backup utility |
 | `void` | Environment cleaner / anti-artifact tool (`vibe.py clean`) |
 | `codex_boot` | Compact workspace snapshot (`vibe.py codex`) |
+| `privacy_guard` | Shared tester-privacy redaction helpers (library, not a CLI tool) |
 
 ---
 
@@ -104,6 +106,7 @@ separate `network/` toolkit so the core roster stays focused.
 
 ### 🔧 Dev / project-specific (not general pentest tools)
 - `vibe_core` — shared base class (library, not a runnable tool)
+- `privacy_guard` — shared privacy/redaction helper (library, not a runnable tool)
 - `add_version_flags` — dev maintenance script that injects `--version` flags
 - `patch_hynest` — auth-guard injector specific to the "Hynest API" project
 

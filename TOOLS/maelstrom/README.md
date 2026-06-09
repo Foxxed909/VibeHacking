@@ -1,8 +1,10 @@
 # Maelstrom
 
-Maelstrom is the Go-based private-target load tester for VibeHacking. It is built for localhost, LAN, VPN, and private staging systems that you own or have explicit permission to test.
+Maelstrom is the Go-based load tester for VibeHacking. It is built for localhost, LAN, VPN, and private staging systems, plus public hosts you own and have explicitly authorized.
 
-Public internet stress targets are intentionally blocked. Use `storm --url-check` for public availability checks instead of load generation.
+Public internet hosts are blocked **unless** you list them in `authorized_targets.txt` at the VibeHacking root (one exact hostname per line — wildcards are ignored on purpose, so you cannot authorize a whole platform like `*.vercel.app`). Only add hosts you own or have written permission to test. For everything else, use `storm --url-check` for safe one-request availability checks instead of load generation.
+
+> **Shared platforms (Vercel, Netlify, etc.):** their acceptable-use policies restrict load/stress testing. Keep rates moderate, avoid full-send (`-r 0`), prefer a preview deployment, and confirm you're within the provider's policy first.
 
 ## Run
 
@@ -44,6 +46,17 @@ python vibe.py maelstrom -t http://localhost:3456/ -d 5s -r 0 -w 1024
 - `--headers`, `-H`: custom header. Repeat as needed, for example `-H "Authorization: Bearer TOKEN"`.
 - `--timeout`: per-request timeout. Default is `5s`.
 - `--report-file`: optional Markdown report path.
+
+## Privacy
+
+Maelstrom follows VibeHacking's default privacy mode for console and Markdown
+reports: targets are displayed as `http://<host>/path` and query strings are
+redacted. Set `VIBE_PRIVACY_MODE=off` only for private local debugging when the
+exact target must appear in the report.
+
+This does not hide network metadata from the target, DNS resolver, ISP/VPN, or
+hosting provider. Use an approved test gateway or privacy relay when tester
+identity must be separated from the target.
 
 ## Host Tuning
 

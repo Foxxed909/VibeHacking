@@ -32,6 +32,7 @@ python vibe.py scan http://127.0.0.1:5500/
 # 3. See everything you can do
 python vibe.py list      # list all tools
 python vibe.py status    # current session target
+python vibe.py privacy   # show tester privacy controls and hard limits
 python vibe.py report    # build the executive HTML dashboard
 python vibe.py codex     # compact workspace snapshot
 ```
@@ -42,6 +43,26 @@ Individual tools run standalone too:
 python TOOLS/ash.py --url http://127.0.0.1:5500/          # recon
 python TOOLS/vibe_headers.py --url http://127.0.0.1:5500/ # header audit
 ```
+
+### 🎯 Testing a remote app you own
+
+Recon/audit tools work on any URL out of the box. The **load tools** (`storm`
+stress mode, `maelstrom`) only fire at localhost/private hosts or hosts you've
+explicitly authorized — add yours to the trust list first:
+
+```powershell
+python vibe.py trust add my-app.vercel.app   # authorize a host you OWN
+python vibe.py trust list                     # see what's trusted
+python vibe.py trust remove my-app.vercel.app # revoke
+
+# now load-test it (you'll get a danger banner + typed confirmation):
+python vibe.py maelstrom -t https://my-app.vercel.app/ -d 20s -r 50 -w 32
+```
+
+> Only ever trust a host you own or have **written** permission to test.
+> Wildcards (`*.vercel.app`) are rejected on purpose. On shared platforms
+> (Vercel, Netlify…) keep rates moderate and avoid full-send — their policies
+> restrict load testing, and a disclaimer doesn't make unauthorized traffic legal.
 
 See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roster.
 
@@ -88,6 +109,48 @@ See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roste
 We go in blind — just like a real attacker would.
 Everything Antigravity learns, it learns through the live running app.
 No peeking at the code. No shortcuts. Black-box only. 🖤
+
+---
+
+## 🛡️ Tester Privacy
+
+VibeHacking now runs with a default-on privacy guard for local artifacts. Tool
+logs, session files, and generated dashboard rows redact URLs, IPs, email
+addresses, auth headers, cookies, tokens, MAC addresses, and Windows user paths.
+HTTP clients also use a generic authorized-test User-Agent instead of a tester's
+real browser/device fingerprint.
+
+```powershell
+python vibe.py privacy
+```
+
+Network reality check: no app can honestly promise that a tester is completely
+untraceable by IP, DNS, hosting, ISP/VPN, or target-server logs. If tester
+identity must be separated from the target, route authorized tests through an
+approved privacy relay, VPN, or test gateway managed for the program. Keep
+written authorization and access-control records outside public reports.
+
+Extra DNS recon is blocked by default in privacy mode. Enable it only when it is
+approved for the target:
+
+```powershell
+$env:VIBE_ALLOW_DNS_PROBES = "1"
+```
+
+Exact local artifacts can be restored for private debugging only:
+
+```powershell
+$env:VIBE_PRIVACY_MODE = "off"
+```
+
+Still protect tester safety by using pseudonymous tester handles by default,
+collecting only the minimum personal information needed for authorization, and
+keeping any identity records encrypted, access-controlled, and separate from
+public reports.
+
+Public reports should identify testers by handle only. Program admins may retain
+confidential accountability records for legal authorization, abuse prevention,
+payment, and incident response.
 
 ---
 

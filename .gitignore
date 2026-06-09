@@ -9,6 +9,7 @@ backups/
 logs/
 vibe_session.json
 VIBE_DASHBOARD.html
+authorized_targets.txt
 
 # Tooling / transient
 .playwright-mcp/

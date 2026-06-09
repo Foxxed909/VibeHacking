@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -155,9 +156,20 @@ func validateTarget(raw string) error {
 		return fmt.Errorf("target scheme must be http or https")
 	}
 	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("target URL must include a host")
+	}
 	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
+
+	// A public host is permitted only if the operator has explicitly listed it
+	// in authorized_targets.txt (a host they own or have permission to test).
+	allowed := loadAuthorizedHosts()
+	if allowed[strings.ToLower(host)] {
+		return nil
+	}
+
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("target host must resolve before testing: %w", err)
@@ -167,10 +179,109 @@ func validateTarget(raw string) error {
 	}
 	for _, ip := range ips {
 		if !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
-			return fmt.Errorf("refusing public target %s (%s). Maelstrom stress mode is for localhost/private/LAN/VPN targets only", host, ip.String())
+			return fmt.Errorf("refusing target %s (%s): not a private/LAN/VPN host and not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host), displayIP(ip.String()))
 		}
 	}
 	return nil
+}
+
+// loadAuthorizedHosts reads authorized_targets.txt (searched upward from the
+// working directory) and returns the set of exact hostnames allowed as public
+// stress targets. Wildcard entries are ignored on purpose so the allowlist can
+// never authorize a whole platform (e.g. *.vercel.app).
+func loadAuthorizedHosts() map[string]bool {
+	allowed := map[string]bool{}
+	path := findAuthorizedFile()
+	if path == "" {
+		return allowed
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return allowed
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.ContainsAny(line, "*?") {
+			continue
+		}
+		host := line
+		if strings.Contains(host, "://") {
+			if u, e := url.Parse(host); e == nil && u.Hostname() != "" {
+				host = u.Hostname()
+			}
+		}
+		if h, _, e := net.SplitHostPort(host); e == nil {
+			host = h
+		}
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host != "" {
+			allowed[host] = true
+		}
+	}
+	return allowed
+}
+
+func findAuthorizedFile() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for i := 0; i < 6; i++ {
+		candidate := filepath.Join(dir, "authorized_targets.txt")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+func privacyEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VIBE_PRIVACY_MODE"))) {
+	case "0", "false", "off", "no", "disabled":
+		return false
+	default:
+		return true
+	}
+}
+
+func displayHost(host string) string {
+	if privacyEnabled() {
+		return "<host>"
+	}
+	return host
+}
+
+func displayIP(ip string) string {
+	if privacyEnabled() {
+		return "<ip>"
+	}
+	return ip
+}
+
+func displayURL(raw string) string {
+	if !privacyEnabled() {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<target>"
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if parsed.RawQuery != "" {
+		return fmt.Sprintf("%s://<host>%s?<redacted>", parsed.Scheme, path)
+	}
+	return fmt.Sprintf("%s://<host>%s", parsed.Scheme, path)
 }
 
 func run(cfg config) error {
@@ -243,7 +354,7 @@ func run(cfg config) error {
 	fmt.Println("================================")
 	fmt.Println(" MAELSTROM - Private Target Load Tester")
 	fmt.Println("================================")
-	fmt.Printf("target=%s method=%s duration=%s workers=%d rate=%s timeout=%s\n", cfg.target, cfg.method, cfg.duration, cfg.workers, cfg.rate, cfg.timeout)
+	fmt.Printf("target=%s method=%s duration=%s workers=%d rate=%s timeout=%s\n", displayURL(cfg.target), cfg.method, cfg.duration, cfg.workers, cfg.rate, cfg.timeout)
 	if rate <= 0 {
 		fmt.Println("mode=full-send (local worker-limited)")
 	} else {
@@ -333,7 +444,7 @@ func newRequest(cfg config, payload []byte, headers map[string]string) (*http.Re
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Maelstrom/1.0 private-load-test")
+	req.Header.Set("User-Agent", "Maelstrom/1.0 authorized-security-test")
 	req.Header.Set("Accept", "*/*")
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -408,7 +519,7 @@ func markdownReport(cfg config, start time.Time, c counters) string {
 
 	var b strings.Builder
 	b.WriteString("\n## Maelstrom Report\n\n")
-	fmt.Fprintf(&b, "- Target: `%s`\n", cfg.target)
+	fmt.Fprintf(&b, "- Target: `%s`\n", displayURL(cfg.target))
 	fmt.Fprintf(&b, "- Method: `%s`\n", cfg.method)
 	fmt.Fprintf(&b, "- Duration: `%s`\n", elapsed.Round(time.Millisecond))
 	fmt.Fprintf(&b, "- Workers: `%d`\n", cfg.workers)

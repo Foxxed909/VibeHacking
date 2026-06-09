@@ -8,6 +8,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
+from privacy_guard import privacy_user_agent
 
 
 class Phantom(VibeTool):
@@ -63,7 +64,9 @@ class Phantom(VibeTool):
         self.log(f"Analyzing cookies from: {url}")
 
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': privacy_user_agent("Phantom"),
+            'DNT': '1',
+            'Sec-GPC': '1',
         }
 
         try:

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
+from privacy_guard import dns_probes_allowed, privacy_enabled
 
 WAF_SIGNATURES = {
     "Cloudflare":   ["cf-ray", "cf-cache-status", "__cfduid"],
@@ -43,7 +44,10 @@ class Ash(VibeTool):
         self.log(f"Target: {url}")
         self.log(f"Host:   {host}")
 
-        self._dns_probe(host)
+        if privacy_enabled() and not dns_probes_allowed():
+            self.log("DNS Resolution: skipped by privacy guard (set VIBE_ALLOW_DNS_PROBES=1 to run explicit DNS recon)", "warn")
+        else:
+            self._dns_probe(host)
         self._ssl_probe(host, scheme)
         self._http_fingerprint(url, host)
         self._path_probe(url)

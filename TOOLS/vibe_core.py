@@ -5,6 +5,8 @@ import json
 import os
 import datetime
 
+from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_data, sanitize_text
+
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8", errors="replace")
@@ -46,7 +48,8 @@ class VibeTool:
         }.get(type, "[*]")
 
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        formatted_msg = f"[{timestamp}] {prefix} {message}"
+        safe_message = sanitize_text(message)
+        formatted_msg = f"[{timestamp}] {prefix} {safe_message}"
         print(formatted_msg)
 
         filename = f"{self.name.lower()}_session.log"
@@ -64,7 +67,7 @@ class VibeTool:
 
     def save_session(self, data):
         with open(self.session_file, 'w') as f:
-            json.dump(data, f, indent=4)
+            json.dump(sanitize_data(data), f, indent=4)
 
     def load_session(self):
         if os.path.exists(self.session_file):
@@ -78,8 +81,15 @@ class VibeTool:
     def safe_request(self, url, method='GET', data=None, headers=None):
         if headers is None:
             headers = {}
+        else:
+            headers = dict(headers)
 
-        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        if privacy_enabled():
+            headers['User-Agent'] = privacy_user_agent(self.name)
+            headers.setdefault('DNT', '1')
+            headers.setdefault('Sec-GPC', '1')
+        else:
+            headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
 
         try:

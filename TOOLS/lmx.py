@@ -6,6 +6,7 @@ import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
+from privacy_guard import sanitize_text
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,7 +59,7 @@ class LMX(VibeTool):
         for s in session_data:
             rows += f"""
                 <tr>
-                    <td>{s['name']}</td>
+                    <td>{sanitize_text(s['name'])}</td>
                     <td><span class="type-badge">{s['type']}</span></td>
                     <td>{s['date']}</td>
                     <td class="crit">{s['crit']}</td>

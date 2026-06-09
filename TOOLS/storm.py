@@ -12,6 +12,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
+from privacy_guard import privacy_user_agent, sanitize_text
 
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -22,13 +23,58 @@ def _is_local_target(url):
     return parsed.hostname in LOCAL_HOSTS
 
 
+def _load_authorized_hosts():
+    """Exact hostnames the operator authorized for stress testing.
+
+    Read from authorized_targets.txt, searched upward from this file. Wildcard
+    entries are ignored on purpose so the allowlist can never authorize a whole
+    platform (e.g. *.vercel.app)."""
+    hosts = set()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        candidate = os.path.join(here, "authorized_targets.txt")
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "*" in line or "?" in line:
+                            continue
+                        host = line
+                        if "://" in host:
+                            host = urllib.parse.urlparse(host).hostname or host
+                        host = host.split("/")[0].strip().lower()
+                        if "@" in host:
+                            host = host.split("@")[-1]
+                        if host.count(":") == 1:
+                            host = host.split(":")[0]
+                        if host:
+                            hosts.add(host)
+            except OSError:
+                pass
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return hosts
+
+
+def _is_authorized_target(url):
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host in LOCAL_HOSTS:
+        return True
+    return host in _load_authorized_hosts()
+
+
 def _join_url(base_url, path):
     return urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
 def _request(target_url, method="GET", body=None, timeout=5):
     headers = {
-        "User-Agent": "VibeStorm/1.0 local-stress",
+        "User-Agent": privacy_user_agent("Storm"),
         "Accept": "text/html,application/json,*/*",
     }
     data = None
@@ -51,7 +97,7 @@ def _request(target_url, method="GET", body=None, timeout=5):
 
 def _check_url(target_url, timeout=8):
     headers = {
-        "User-Agent": "VibeStorm/1.0 url-check",
+        "User-Agent": privacy_user_agent("Storm"),
         "Accept": "text/html,application/json,*/*",
     }
     started = time.perf_counter()
@@ -177,13 +223,33 @@ def _build_plan(base_url, include_chat=False):
     return plan
 
 
-def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, timeout, full_send):
-    tool = VibeTool("Storm", "Localhost Traffic Stressor")
+def _confirm_external(host):
+    print("=" * 64)
+    print("  ⚠  EXTERNAL TARGET — ACTIVE LOAD TEST")
+    print(f"  Host: {sanitize_text(host)}")
+    print("  Send load only to hosts you own or are authorized to test.")
+    print("  Unauthorized load/DoS traffic is illegal — a disclaimer won't help.")
+    print("=" * 64)
+    try:
+        return input(f"  Type the hostname ({host}) to proceed: ").strip().lower() == host.lower()
+    except EOFError:
+        return False
+
+
+def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, timeout, full_send, assume_yes=False):
+    tool = VibeTool("Storm", "Traffic Stressor")
     tool.banner()
 
-    if not _is_local_target(base_url):
-        tool.log("Refusing to run: Storm is localhost-only.", "fail")
+    if not _is_authorized_target(base_url):
+        tool.log("Refusing to run: target is not localhost and not in authorized_targets.txt.", "fail")
+        tool.log("Add a host you own (e.g. your-app.vercel.app) to authorized_targets.txt to stress-test it.", "info")
         return 2
+    if not _is_local_target(base_url):
+        tool.log("Authorized external target detected. Keep rates moderate; avoid --full-send on shared hosts.", "warn")
+        host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+        if not assume_yes and not _confirm_external(host):
+            tool.log("Aborted — external target not confirmed.", "fail")
+            return 3
 
     duration = max(1, int(duration))
     entries_per_min = max(1, int(entries_per_min))
@@ -296,7 +362,7 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Storm - Localhost Traffic Stressor")
-    parser.add_argument("--url", default="", help="Target URL. Stress mode defaults to http://localhost:3456/")
+    parser.add_argument("--url", default="", help="Target URL. Stress mode allows localhost or hosts listed in authorized_targets.txt; defaults to http://localhost:3456/")
     parser.add_argument("--urls-file", default="", help="File containing one URL per line for --url-check")
     parser.add_argument(
         "--url-check",
@@ -317,6 +383,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Also send valid /api/chat payloads. May consume API credits if a key is loaded.",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive external-target confirmation (for scripted runs you trust).",
+    )
     parser.add_argument("-v", "--version", action="version", version="Storm 1.0.0")
     args = parser.parse_args()
 
@@ -332,5 +403,6 @@ if __name__ == "__main__":
             args.include_chat,
             args.timeout,
             args.full_send,
+            args.yes,
         )
     )

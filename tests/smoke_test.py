@@ -30,10 +30,12 @@ PY = sys.executable
 
 # Compile-checked but skipped in the runtime `--help` sweep:
 #   - vibe_core: shared base library, no CLI
+#   - privacy_guard: shared privacy/redaction helpers, no CLI
 #   - lmx: report generator with no argparse (would run, not print help)
 #   - add_version_flags / patch_hynest: dev/project utilities that rewrite files
 SKIP_RUNTIME = {
     "vibe_core.py",
+    "privacy_guard.py",
     "lmx.py",
     "add_version_flags.py",
     "patch_hynest.py",
@@ -79,6 +81,35 @@ def main():
             print(f"[PASS] version single-source-of-truth ({file_v})")
     except Exception as e:  # noqa: BLE001
         failures.append(f"version check errored: {e}")
+
+    # 1b. Privacy redaction defaults --------------------------------------
+    checks += 1
+    try:
+        import privacy_guard  # noqa: E402
+
+        sample = (
+            "Target https://alice:secret@tester.example.com/api/u/"
+            "550e8400-e29b-41d4-a716-446655440000?email=me@example.com&token=abc "
+            "Authorization: Bearer secret123 C:\\Users\\WhitePC\\AppData\\x 203.0.113.5"
+        )
+        redacted = privacy_guard.sanitize_text(sample)
+        leaks = [
+            item
+            for item in (
+                "tester.example.com",
+                "me@example.com",
+                "secret123",
+                "WhitePC",
+                "203.0.113.5",
+            )
+            if item in redacted
+        ]
+        if leaks:
+            failures.append(f"privacy redaction leaked: {leaks}")
+        else:
+            print("[PASS] privacy guard redacts common tester identifiers")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"privacy redaction check errored: {e}")
 
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]

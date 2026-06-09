@@ -9,6 +9,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 _tools_dir = os.path.dirname(os.path.abspath(__file__))
 _root = os.path.dirname(_tools_dir)
+sys.path.insert(0, _tools_dir)
+from privacy_guard import sanitize_text
 
 
 def _read_text(path):
@@ -22,7 +24,7 @@ def _read_text(path):
 def _list_tools():
     names = []
     for entry in sorted(os.listdir(_tools_dir)):
-        if entry.endswith(".py") and entry not in {"vibe_core.py", "codex_boot.py"}:
+        if entry.endswith(".py") and entry not in {"vibe_core.py", "codex_boot.py", "privacy_guard.py"}:
             names.append(entry[:-3])
     return names
 
@@ -43,8 +45,8 @@ def run():
 
     print("== CODEX SNAPSHOT ==")
     if args.target:
-        print(f"Target: {args.target}")
-    print(f"Workdir: {os.path.abspath(os.getcwd())}")
+        print(f"Target: {sanitize_text(args.target)}")
+    print(f"Workdir: {sanitize_text(os.path.abspath(os.getcwd()))}")
     print(f"Tools: {', '.join(tools)}")
     print("")
 
