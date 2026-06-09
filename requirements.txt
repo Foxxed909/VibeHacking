@@ -1,0 +1,17 @@
+# VibeHacking — runtime dependencies
+#
+# The Python toolset is intentionally 100% standard library — there are NO
+# third-party pip packages to install. `pip install -r requirements.txt`
+# will succeed with nothing to do. This keeps the framework portable and
+# trivial to run on any clean Python install.
+#
+# Requirements:
+#   - Python 3.8+        (tested on 3.14; uses f-strings + sys.stdout.reconfigure)
+#
+# Optional / external (not pip-installable):
+#   - Go 1.20+           only needed for `vibe.py maelstrom` (the Go load tester)
+#   - Playwright MCP     for browser-honest black-box testing (driven via the
+#                        agent, not a Python import)
+#
+# If you add a third-party dependency in the future, pin it below, e.g.:
+#   requests==2.32.3

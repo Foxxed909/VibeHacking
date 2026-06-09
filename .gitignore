@@ -1,9 +1,20 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# VibeHacking artifacts (regenerated each run)
 backups/
 logs/
 vibe_session.json
 VIBE_DASHBOARD.html
+
+# Tooling / transient
+.playwright-mcp/
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Batch launchers (generated per-tool)
 *.bat

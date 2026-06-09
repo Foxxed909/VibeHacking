@@ -3,9 +3,19 @@ import argparse
 import subprocess
 import os
 import json
-from urllib.parse import urlparse
 
-VERSION = "0.5.0"
+
+def _read_version():
+    """Single source of truth: the root VERSION file. Falls back if absent."""
+    try:
+        version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+        with open(version_path, "r", encoding="utf-8") as f:
+            return f.read().strip() or "1.0.0"
+    except OSError:
+        return "1.0.0"
+
+
+VERSION = _read_version()
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -23,13 +33,6 @@ def run_tool(args):
     return run_command([sys.executable, *args])
 
 
-def leep_args_from_url(url):
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if not path_parts:
-        path_parts = [""]
-    return ["--port", str(port), "--path", *path_parts]
 
 def run_vibe():
     parser = argparse.ArgumentParser(description=f"🛡️ VIBE HACKING v{VERSION} - Central Command Interface")
@@ -110,14 +113,17 @@ def run_vibe():
             json.dump({"target": args.url, "last_scan": str(os.times())}, f)
 
         # Chain together multiple tools for a "Deep Scan"
-        print("[*] Phase 1: Header Security Audit...")
+        print("[*] Phase 1: Domain Recon (Ash)...")
+        run_tool(["TOOLS/ash.py", "--url", args.url])
+
+        print("[*] Phase 2: Header Security Audit...")
         run_tool(["TOOLS/vibe_headers.py", "--url", args.url])
-        
-        print("[*] Phase 2: Hidden Asset Discovery (Ghost)...")
+
+        print("[*] Phase 3: Hidden Asset Discovery (Ghost)...")
         run_tool(["TOOLS/ghost.py", "--url", args.url])
-        
-        print("[*] Phase 3: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", *leep_args_from_url(args.url)])
+
+        print("[*] Phase 4: Logic Flow Audit (Leep)...")
+        run_tool(["TOOLS/leep.py", "--url", args.url])
         
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 

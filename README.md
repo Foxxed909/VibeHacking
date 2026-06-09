@@ -18,6 +18,47 @@ and occasionally, **BlackPC** doing it purely for the fun of it. 😄
 
 ---
 
+## 🚀 Quickstart
+
+```powershell
+# 1. (Optional) create the venv — no third-party packages are required
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt   # stdlib-only: installs nothing, by design
+
+# 2. Run a deep scan against a target you own / are authorized to test
+python vibe.py scan http://127.0.0.1:5500/
+
+# 3. See everything you can do
+python vibe.py list      # list all tools
+python vibe.py status    # current session target
+python vibe.py report    # build the executive HTML dashboard
+python vibe.py codex     # compact workspace snapshot
+```
+
+Individual tools run standalone too:
+
+```powershell
+python TOOLS/ash.py --url http://127.0.0.1:5500/          # recon
+python TOOLS/vibe_headers.py --url http://127.0.0.1:5500/ # header audit
+```
+
+See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roster.
+
+> **Antigravity** (or any agent with a live browser — e.g. Playwright MCP) is the
+> black-box *driver* that scopes the target through its UI. `vibe.py` is the
+> command engine that runs the probes. Use either, or both together.
+
+---
+
+## 📦 Requirements
+
+- **Python 3.8+** (tested on 3.14) — the entire toolset is **standard-library only**, so there is nothing to `pip install`.
+- **Go 1.20+** *(optional)* — only for `vibe.py maelstrom`, the high-rate private-target load tester.
+- **A browser-capable agent** *(optional)* — Antigravity / Playwright MCP for true browser-driven black-box testing.
+
+---
+
 ## 🗂️ How It Works
 
 **The Setup looks like this:**

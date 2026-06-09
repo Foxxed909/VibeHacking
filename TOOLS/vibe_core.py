@@ -12,11 +12,23 @@ for stream in (sys.stdout, sys.stderr):
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _read_version():
+    """Single source of truth: the root VERSION file. Falls back if absent."""
+    try:
+        with open(os.path.join(_root, "VERSION"), "r", encoding="utf-8") as f:
+            return f.read().strip() or "1.0.0"
+    except OSError:
+        return "1.0.0"
+
+
+FRAMEWORK_VERSION = _read_version()
+
+
 class VibeTool:
     def __init__(self, name, description):
         self.name = name
         self.description = description
-        self.version = "1.0.0"
+        self.version = FRAMEWORK_VERSION
         self.session_file = os.path.join(_root, "vibe_session.json")
         self.log_dir = os.path.join(_root, "logs")
 
