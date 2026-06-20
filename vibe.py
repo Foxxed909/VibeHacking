@@ -193,6 +193,14 @@ def run_vibe():
     clean_parser = subparsers.add_parser("clean", help="Run the Environment Cleaner (Void)")
     clean_parser.add_argument("--db", help="Path to target database")
 
+    # Command: senoria
+    senoria_parser = subparsers.add_parser("senoria", help="Find leaked API keys in served public web assets")
+    senoria_parser.add_argument(
+        "senoria_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to Senoria, e.g. --scan localhost --i 4 -w 72",
+    )
+
     # Command: storm
     storm_parser = subparsers.add_parser("storm", help="Run traffic stress against an authorized target")
     storm_parser.add_argument("url", nargs="?", default="", help="Target URL (stress mode allows localhost or hosts in authorized_targets.txt)")
@@ -252,12 +260,17 @@ def run_vibe():
     codex_parser.add_argument("--ultra", action="store_true", help="Print the smallest useful snapshot")
     codex_parser.add_argument("--workdir", default="", help="Switch into a specific working directory first")
 
-    if len(sys.argv) > 1 and sys.argv[1] == "maelstrom":
-        raw_maelstrom_args = sys.argv[2:]
+    argv = sys.argv[1:]
+    if argv[:1] == ["maelstrom"]:
+        raw_maelstrom_args = argv[1:]
         args = parser.parse_args(["maelstrom"])
         args.maelstrom_args = raw_maelstrom_args[1:] if raw_maelstrom_args[:1] == ["--"] else raw_maelstrom_args
+    elif argv[:1] == ["senoria"]:
+        raw_senoria_args = argv[1:]
+        args = parser.parse_args(["senoria"])
+        args.senoria_args = raw_senoria_args[1:] if raw_senoria_args[:1] == ["--"] else raw_senoria_args
     else:
-        args = parser.parse_args()
+        args = parser.parse_args(argv)
 
     if args.command != "codex":
         print("================================")
@@ -299,6 +312,14 @@ def run_vibe():
         cmd = ["TOOLS/void.py"]
         if args.db: cmd += ["--db", args.db]
         run_tool(cmd)
+
+    elif args.command == "senoria":
+        forwarded = list(args.senoria_args)
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        print("[*] Launching Senoria leaked-API audit...")
+        sys.stdout.flush()
+        return run_tool(["TOOLS/senoria.py", *forwarded]).returncode
 
     elif args.command == "storm":
         is_check = args.url_check or args.urls_file

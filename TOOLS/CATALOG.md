@@ -63,6 +63,7 @@ Find the things that should never have left the server.
 | Tool | Role |
 |------|------|
 | `env_probe` | Environment-variable & stack-trace leakage probe |
+| `senoria` | Public web asset secret scanner — crawls served pages/JS/config for API-key/token leaks; `--show-keys` reveals raw matches for localhost/private targets only |
 | `deep_extract` | Focused API-key deep extraction |
 | `key_stealer` | Multi-vector API-key extraction suite |
 | `credit_drain` | API credit-drain / rate-limit auditor |
@@ -112,5 +113,5 @@ separate `network/` toolkit so the core roster stays focused.
 
 ---
 
-_Total: 42 `.py` files in `TOOLS/` — 1 base library, ~33 pentest tools,
+_Total: 43 `.py` files in `TOOLS/` — 1 base library, ~34 pentest tools,
 2 demos, 2 off-topic, 3 dev/project utilities, plus the Go `maelstrom` tester._

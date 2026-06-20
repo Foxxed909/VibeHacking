@@ -29,6 +29,11 @@ pip install -r requirements.txt   # stdlib-only: installs nothing, by design
 # 2. Run a deep scan against a target you own / are authorized to test
 python vibe.py scan http://127.0.0.1:5500/
 
+# Scan served pages/assets for leaked API keys or tokens (redacted findings)
+python vibe.py senoria --scan localhost --i 4 -w 72
+python vibe.py senoria --scan -url:https://your-owned-site.example --i 6 -w 78
+python vibe.py senoria --scan localhost:5500 --show-keys # local/private only
+
 # 3. See everything you can do
 python vibe.py list      # list all tools
 python vibe.py status    # current session target
@@ -42,6 +47,7 @@ Individual tools run standalone too:
 ```powershell
 python TOOLS/ash.py --url http://127.0.0.1:5500/          # recon
 python TOOLS/vibe_headers.py --url http://127.0.0.1:5500/ # header audit
+python TOOLS/senoria.py --scan http://127.0.0.1:5500/ --i 2 -w 24 --show-keys # local key audit
 ```
 
 ### 🎯 Testing a remote app you own
