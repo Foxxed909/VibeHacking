@@ -64,14 +64,17 @@ class Spider(VibeTool):
             surface.append(entry)
 
             if status == 200 and 'html' in content_type.lower():
-                found_forms = re.findall(
-                    r'<form[^>]*action=["\']([^"\']*)["\'][^>]*method=["\'](\w+)["\']',
-                    body, re.IGNORECASE
-                )
-                for action, method in found_forms:
+                # Pull each <form> tag, then read action/method independently so
+                # attribute order doesn't matter (e.g. method="post" before
+                # action=). Method defaults to GET per the HTML spec.
+                for tag in re.findall(r'<form\b[^>]*>', body, re.IGNORECASE):
+                    action_match = re.search(r'action\s*=\s*["\']([^"\']*)["\']', tag, re.IGNORECASE)
+                    method_match = re.search(r'method\s*=\s*["\']?([A-Za-z]+)', tag, re.IGNORECASE)
+                    action = action_match.group(1) if action_match else current
+                    method = (method_match.group(1) if method_match else "GET").upper()
                     resolved = urllib.parse.urljoin(current, action)
-                    forms.append((method.upper(), resolved))
-                    self.log(f"  Form found: {method.upper()} {resolved}", "hack")
+                    forms.append((method, resolved))
+                    self.log(f"  Form found: {method} {resolved}", "hack")
 
                 links = self._extract_links(current, body)
                 for link in links:

@@ -23,6 +23,14 @@ Map the attack surface before touching it.
 | `api_check` | Single-endpoint checker — quick one-off probe of a specific route |
 | `cloud_scout` | Cloud environment prober — metadata endpoints, bucket/role hints |
 
+## Availability & Resilience
+Confirm whether a URL loads, fails, or stays unavailable without generating
+stress traffic.
+
+| Tool | Role |
+|------|------|
+| `noloader` | No-load window verifier — serial URL probes, e.g. `python vibe.py --noloader -urlx https://example.com t-60 -f 3 -fx 7` |
+
 ## 🛡️ Headers & Transport Security
 What the server tells the browser to do (or fails to).
 
@@ -88,6 +96,7 @@ Turn findings into receipts; manage the workspace.
 | `backer` | Session-data backup utility |
 | `void` | Environment cleaner / anti-artifact tool (`vibe.py clean`) |
 | `codex_boot` | Compact workspace snapshot (`vibe.py codex`) |
+| `multi` | Parallel launcher: local/private by default; `multi scan --allow-external` and `multi attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
 | `privacy_guard` | Shared tester-privacy redaction helpers (library, not a CLI tool) |
 
 ---
@@ -113,5 +122,5 @@ separate `network/` toolkit so the core roster stays focused.
 
 ---
 
-_Total: 43 `.py` files in `TOOLS/` — 1 base library, ~34 pentest tools,
-2 demos, 2 off-topic, 3 dev/project utilities, plus the Go `maelstrom` tester._
+_Total: 45 `.py` files in `TOOLS/` — shared libraries, pentest/audit tools,
+demos, off-topic review candidates, dev utilities, plus the Go `maelstrom` tester._

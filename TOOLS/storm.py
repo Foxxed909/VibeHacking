@@ -299,7 +299,7 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
         while (full_send or submitted < total_budget) and time.perf_counter() - started < duration:
             futures = record_done(futures)
             while len(futures) >= concurrency:
-                done, _ = concurrent.futures.wait(
+                done, not_done = concurrent.futures.wait(
                     futures, timeout=0.05, return_when=concurrent.futures.FIRST_COMPLETED
                 )
                 for future in done:
@@ -307,7 +307,10 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
                     results.append((status, latency))
                     if error:
                         errors[error] = errors.get(error, 0) + 1
-                futures = [f for f in futures if not f.done()]
+                # Keep exactly the futures we haven't collected. Filtering on
+                # f.done() would silently drop any future that finishes between
+                # the wait() returning and this line, losing its result sample.
+                futures = list(not_done)
 
             method, url, body = plan[submitted % len(plan)]
             futures.append(pool.submit(_request, url, method, body, timeout))

@@ -26,16 +26,58 @@ def _read_version():
 FRAMEWORK_VERSION = _read_version()
 
 
+class _CaseInsensitiveHeaders(dict):
+    """HTTP response headers whose lookups ignore case.
+
+    HTTP header names are case-insensitive, but ``dict(response.info())`` keeps
+    whatever casing the server sent — and HTTP/2 front-ends and some CDNs send
+    them lowercased. Wrapping the result here lets tools look up
+    ``headers.get('Content-Security-Policy')`` and still find a
+    ``content-security-policy`` header. Iteration preserves the original casing.
+    """
+
+    def __init__(self, source=None):
+        super().__init__()
+        self._lower = {}
+        if source is not None:
+            items = source.items() if hasattr(source, "items") else source
+            for key, value in items:
+                self[key] = value
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if isinstance(key, str):
+            self._lower[key.lower()] = value
+
+    def __getitem__(self, key):
+        if isinstance(key, str) and key.lower() in self._lower:
+            return self._lower[key.lower()]
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if isinstance(key, str):
+            return self._lower.get(key.lower(), default)
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        if isinstance(key, str):
+            return key.lower() in self._lower
+        return super().__contains__(key)
+
+
 class VibeTool:
     def __init__(self, name, description):
         self.name = name
         self.description = description
         self.version = FRAMEWORK_VERSION
-        self.session_file = os.path.join(_root, "vibe_session.json")
-        self.log_dir = os.path.join(_root, "logs")
+        self.session_file = os.environ.get("VIBE_SESSION_FILE") or os.path.join(_root, "vibe_session.json")
+        self.log_dir = os.environ.get("VIBE_LOG_DIR") or os.path.join(_root, "logs")
 
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
+        session_dir = os.path.dirname(os.path.abspath(self.session_file))
+        if session_dir and not os.path.exists(session_dir):
+            os.makedirs(session_dir)
 
     def log(self, message, type="info"):
         prefix = {
@@ -99,8 +141,8 @@ class VibeTool:
 
             req = urllib.request.Request(url, method=method, data=body, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
-                return response.getcode(), response.read().decode('utf-8', errors='ignore'), dict(response.info())
+                return response.getcode(), response.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(response.info())
         except urllib.error.HTTPError as e:
-            return e.code, e.read().decode('utf-8', errors='ignore'), dict(e.headers)
+            return e.code, e.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(e.headers)
         except Exception as e:
             return 0, str(e), {}

@@ -63,6 +63,12 @@ type counters struct {
 	latencies   []float64
 }
 
+const (
+	maxExternalRPS     = 9999.99
+	maxExternalWorkers = 256
+	maxPrivateRPS      = 250000.0
+)
+
 func main() {
 	cfg, err := parseFlags()
 	if err != nil {
@@ -243,50 +249,74 @@ func findAuthorizedFile() string {
 	return ""
 }
 
-func privacyEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("VIBE_PRIVACY_MODE"))) {
-	case "0", "false", "off", "no", "disabled":
-		return false
-	default:
-		return true
-	}
-}
-
+// Maelstrom intentionally shows the exact target host, IP, and URL in console
+// and Markdown output so operators can confirm they are hitting the intended
+// authorized host. These pass-throughs are kept as named functions so call
+// sites stay readable and a future redaction policy has one place to live.
 func displayHost(host string) string {
-	if privacyEnabled() {
-		return "<host>"
-	}
 	return host
 }
 
 func displayIP(ip string) string {
-	if privacyEnabled() {
-		return "<ip>"
-	}
 	return ip
 }
 
 func displayURL(raw string) string {
-	if !privacyEnabled() {
-		return raw
-	}
+	return raw
+}
+
+func isPublicInternetTarget(raw string) bool {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "<target>"
+	if err != nil {
+		return true
 	}
-	path := parsed.EscapedPath()
-	if path == "" {
-		path = "/"
+	host := parsed.Hostname()
+	if host == "" {
+		return true
 	}
-	if parsed.RawQuery != "" {
-		return fmt.Sprintf("%s://<host>%s?<redacted>", parsed.Scheme, path)
+	if strings.EqualFold(host, "localhost") {
+		return false
 	}
-	return fmt.Sprintf("%s://<host>%s", parsed.Scheme, path)
+	if ip := net.ParseIP(host); ip != nil {
+		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return true
+	}
+	for _, ip := range ips {
+		if !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateTrafficLimits(cfg config, rate float64) error {
+	if isPublicInternetTarget(cfg.target) {
+		if rate <= 0 {
+			return fmt.Errorf("full-send is disabled for public internet targets; use localhost/private labs for unbounded tests")
+		}
+		if rate > maxExternalRPS {
+			return fmt.Errorf("public internet Maelstrom rate %.2f rps exceeds the %.2f rps cap; use localhost/private labs for high-rate tests", rate, maxExternalRPS)
+		}
+		if cfg.workers > maxExternalWorkers {
+			return fmt.Errorf("public internet Maelstrom workers %d exceeds the %d worker cap", cfg.workers, maxExternalWorkers)
+		}
+		return nil
+	}
+	if rate > maxPrivateRPS {
+		return fmt.Errorf("private-target Maelstrom rate %.2f rps exceeds the %.0f rps local safety cap", rate, maxPrivateRPS)
+	}
+	return nil
 }
 
 func run(cfg config) error {
 	rate, err := parseRate(cfg.rate)
 	if err != nil {
+		return err
+	}
+	if err := validateTrafficLimits(cfg, rate); err != nil {
 		return err
 	}
 

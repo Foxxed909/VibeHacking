@@ -111,11 +111,38 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"privacy redaction check errored: {e}")
 
+    # 1c. Case-insensitive response headers -------------------------------
+    checks += 1
+    try:
+        import vibe_core  # noqa: E402
+
+        headers = vibe_core._CaseInsensitiveHeaders(
+            {"content-security-policy": "default-src 'self'", "Server": "nginx"}
+        )
+        ok = (
+            headers.get("Content-Security-Policy") == "default-src 'self'"
+            and headers.get("SERVER") == "nginx"
+            and "x-frame-options" not in headers
+            and "Content-Security-Policy" in headers
+        )
+        if not ok:
+            failures.append("safe_request headers are not case-insensitive")
+        else:
+            print("[PASS] response headers look up case-insensitively")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"case-insensitive header check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [
         os.path.join(TOOLS, f) for f in os.listdir(TOOLS) if f.endswith(".py")
     ]
+    vb_dir = os.path.join(ROOT, "vb")
+    if os.path.isdir(vb_dir):
+        for dirpath, _dirnames, filenames in os.walk(vb_dir):
+            py_files += [
+                os.path.join(dirpath, f) for f in filenames if f.endswith(".py")
+            ]
     compiled_ok = 0
     for path in sorted(py_files):
         checks += 1
@@ -136,6 +163,166 @@ def main():
             failures.append(f"`{label}` exited {code}: {err.strip()[:200]}")
         else:
             print(f"[PASS] {label}")
+
+    checks += 1
+    code, err = run(["vibe.py", "--noloader", "--help"])
+    if code != 0:
+        failures.append(f"`vibe.py --noloader --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py --noloader --help")
+
+    checks += 1
+    code, err = run(["vibe.py", "multi", "--help"])
+    if code != 0:
+        failures.append(f"`vibe.py multi --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py multi --help")
+
+    checks += 1
+    code, err = run(
+        [
+            "vibe.py",
+            "multi",
+            "scan",
+            "--targets",
+            "http://127.0.0.1:1/",
+            "http://localhost:1/",
+            "--jobs",
+            "2",
+            "--dry-run",
+        ]
+    )
+    if code != 0:
+        failures.append(f"`vibe.py multi scan --dry-run` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py multi scan dry-runs local targets")
+
+    checks += 1
+    code, err = run(["vibe.py", "multi", "scan", "--targets", "https://example.com", "--dry-run"])
+    if code == 0:
+        failures.append("vibe.py multi scan allowed a public target")
+    else:
+        print("[PASS] vibe.py multi scan refuses public targets")
+
+    checks += 1
+    code, err = run(
+        [
+            "vibe.py",
+            "multi",
+            "scan",
+            "--allow-external",
+            "--yes",
+            "--targets",
+            "https://example.com",
+            "--dry-run",
+        ]
+    )
+    if code != 0:
+        failures.append(f"`vibe.py multi scan --allow-external --dry-run` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py multi scan can dry-run authorized external targets")
+
+    checks += 1
+    code, err = run(["vibe.py", "multi", "attack", "--targets", "https://example.com", "--dry-run"])
+    if code == 0:
+        failures.append("vibe.py multi attack allowed a public target without --allow-external")
+    else:
+        print("[PASS] vibe.py multi attack refuses public targets by default")
+
+    checks += 1
+    code, err = run(
+        [
+            "vibe.py",
+            "multi",
+            "attack",
+            "--allow-external",
+            "--yes",
+            "--targets",
+            "https://example.com",
+            "--dry-run",
+        ]
+    )
+    if code != 0:
+        failures.append(f"`vibe.py multi attack --allow-external --dry-run` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py multi attack can dry-run authorized external targets")
+
+    checks += 1
+    code, err = run(
+        [
+            "vibe.py",
+            "--noloader",
+            "-urlx",
+            "http://127.0.0.1:1/",
+            "t-1",
+            "--interval",
+            "0.2",
+            "--request-timeout",
+            "0.2",
+            "-f",
+            "1",
+        ],
+        timeout=8,
+    )
+    if code != 0:
+        failures.append(f"`vibe.py --noloader` failed local no-load check: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py --noloader verifies a closed local port")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "--help"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli --help")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "multi", "--help"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli multi --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli routes multi")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "list", "--plain"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli list --plain` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli list --plain")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "locked", "--plain"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli locked --plain` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli locked --plain")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "storm", "--help"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli storm --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli allows locked tool help")
+
+    checks += 1
+    code, err = run(["vibe.py", "maelstrom", "-t", "https://example.com", "-d", "1s", "-r", "10", "-w", "1"])
+    if code == 0:
+        failures.append("vibe.py maelstrom allowed an untrusted public host")
+    else:
+        print("[PASS] vibe.py maelstrom requires public hosts to be trusted")
+
+    checks += 1
+    try:
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        import vibe  # noqa: E402
+
+        if vibe.MAX_EXTERNAL_MAELSTROM_RPS != 9999.99:
+            failures.append(f"unexpected external Maelstrom cap: {vibe.MAX_EXTERNAL_MAELSTROM_RPS}")
+        else:
+            print("[PASS] external Maelstrom cap is 9999.99 rps")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Maelstrom cap check errored: {e}")
 
     # 4. Tool --help sweep -------------------------------------------------
     tools = sorted(

@@ -51,7 +51,7 @@ class SSRFProbe(VibeTool):
             try:
                 r = urllib.request.urlopen(req, timeout=6)
                 resp = r.read().decode()
-                if "error" not in resp.lower() or len(resp) > 100:
+                if "error" not in resp.lower() and len(resp) > 100:
                     self.log(f"[SSRF HIT] {target} => {resp[:120]}", "fail")
                     hits += 1
                 else:

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "policy": "authorized-only-visible-gate",
+  "locked_tools": {
+    "storm": {
+      "reason": "active traffic stressor; only for localhost, private, or exact trusted hosts"
+    },
+    "maelstrom": {
+      "reason": "high-rate load tester; only for localhost, private, or exact trusted hosts"
+    },
+    "vibe_api": {
+      "reason": "JSON endpoint stressor"
+    },
+    "credit_drain": {
+      "reason": "rate-limit and credit-consumption auditor"
+    },
+    "deep_extract": {
+      "reason": "sensitive configuration and key exposure auditor"
+    },
+    "key_stealer": {
+      "reason": "multi-vector secret exposure auditor"
+    },
+    "traversal_sniper": {
+      "reason": "path traversal and sensitive-file exposure auditor"
+    },
+    "ssrf_probe": {
+      "reason": "server-side request forgery auditor"
+    },
+    "prompt_injector": {
+      "reason": "LLM prompt-injection auditor"
+    },
+    "exploit_final": {
+      "reason": "exploit demonstration tool"
+    },
+    "exploit_vault": {
+      "reason": "exploit demonstration tool"
+    }
+  }
+}
+

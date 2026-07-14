@@ -34,12 +34,25 @@ python vibe.py senoria --scan localhost --i 4 -w 72
 python vibe.py senoria --scan -url:https://your-owned-site.example --i 6 -w 78
 python vibe.py senoria --scan localhost:5500 --show-keys # local/private only
 
+# Run local/private targets in parallel (refuses public hosts)
+python vibe.py multi scan --targets http://127.0.0.1:5500/ http://127.0.0.1:5600/ --jobs 2
+python vibe.py multi maelstrom --targets http://127.0.0.1:5500/ http://127.0.0.1:5600/ -d 10s -r 50000 -w 64
+
+# Authorized external look-only multi scan (no load/stress)
+python vibe.py multi scan --allow-external --targets https://your-owned-site.example https://your-second-site.example --jobs 2
+
+# Authorized external audit chain; load/stress is forced off
+python vibe.py multi attack --allow-external --targets https://your-owned-site.example --jobs 1
+
 # 3. See everything you can do
 python vibe.py list      # list all tools
 python vibe.py status    # current session target
 python vibe.py privacy   # show tester privacy controls and hard limits
 python vibe.py report    # build the executive HTML dashboard
 python vibe.py codex     # compact workspace snapshot
+
+# Verify that a URL stays unavailable for a time window (safe serial probes)
+python vibe.py --noloader -urlx https://example.com t-60 -f 3 -fx 7
 ```
 
 Individual tools run standalone too:
@@ -47,8 +60,31 @@ Individual tools run standalone too:
 ```powershell
 python TOOLS/ash.py --url http://127.0.0.1:5500/          # recon
 python TOOLS/vibe_headers.py --url http://127.0.0.1:5500/ # header audit
+python TOOLS/noloader.py -urlx http://127.0.0.1:5500/ t-10 # no-load check
 python TOOLS/senoria.py --scan http://127.0.0.1:5500/ --i 2 -w 24 --show-keys # local key audit
 ```
+
+### Global CLI
+
+Install the global Windows shims once:
+
+```powershell
+.\install_vibe_cli.ps1
+```
+
+Then run VibeHacking from anywhere:
+
+```powershell
+vibe /                  # interactive picker
+vibe list               # all runnable tools
+vibe scan http://127.0.0.1:5500/
+vibe ash --url https://example.com
+vibe locked             # authorized-only gated tools
+```
+
+The locked gate is visible safety friction for high-impact tools. It is not a
+secret exploit vault; locked access is logged locally in
+`logs/locked_cli_access.log`.
 
 ### 🎯 Testing a remote app you own
 
@@ -69,6 +105,10 @@ python vibe.py maelstrom -t https://my-app.vercel.app/ -d 20s -r 50 -w 32
 > Wildcards (`*.vercel.app`) are rejected on purpose. On shared platforms
 > (Vercel, Netlify…) keep rates moderate and avoid full-send — their policies
 > restrict load testing, and a disclaimer doesn't make unauthorized traffic legal.
+
+> Public Maelstrom runs are capped at 9999.99 rps / 256 workers. The allowlist is
+> the permission gate: only add external hosts you own or have written permission
+> to test.
 
 See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roster.
 
