@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeHacking — Operator Console (Internal)</title>
+<style>
+  :root{
+    --bg:#05070a; --surface:#0b1016; --surface2:#111926; --border:#1c2836;
+    --green:#00ff87; --green-dim:#00cc6a; --red:#ff4d4d; --orange:#ff8c00;
+    --blue:#4fa3ff; --purple:#c678dd; --cyan:#00e5ff; --pink:#ff4da6; --gold:#ffce54;
+    --text:#cdd9e5; --muted:#5c6e7a;
+    --mono:'JetBrains Mono','Fira Code','Courier New',monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;
+    background-image:radial-gradient(circle at 15% -10%,rgba(0,255,135,.10),transparent 42%),
+                     radial-gradient(circle at 92% 4%,rgba(198,120,221,.08),transparent 40%);}
+  a{color:var(--green);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
+  code,.mono{font-family:var(--mono)}
+
+  .ribbon{background:repeating-linear-gradient(45deg,#1a1206,#1a1206 12px,#231806 12px,#231806 24px);
+    border-bottom:1px solid var(--border);color:var(--gold);font-family:var(--mono);font-size:12px;
+    letter-spacing:.16em;text-transform:uppercase;text-align:center;padding:7px}
+
+  header{padding:56px 0 34px;border-bottom:1px solid var(--border)}
+  .who{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase}
+  h1{font-size:clamp(30px,6vw,52px);line-height:1.05;font-weight:800;letter-spacing:-.02em;margin-top:10px}
+  h1 .glow{color:var(--green);text-shadow:0 0 22px rgba(0,255,135,.45)}
+  .by{margin-top:12px;color:var(--muted);font-family:var(--mono);font-size:13px}
+  .by b{color:var(--text)}
+
+  section{padding:44px 0;border-bottom:1px solid var(--border)}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:20px}
+  h2 .n{color:var(--green)}
+
+  .rule{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--green);border-radius:10px;padding:20px 22px}
+  .rule p{margin:0 0 8px} .rule p:last-child{margin:0} .rule b{color:var(--text)}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+  .panel h3{font-family:var(--mono);font-size:14px;color:var(--green);margin-bottom:12px}
+  .panel.warn h3{color:var(--gold)}
+  ul{list-style:none} li{font-size:13.5px;color:var(--text);padding:5px 0;border-bottom:1px dashed var(--border)}
+  li:last-child{border-bottom:0} li .m{color:var(--muted)}
+
+  pre{background:#04070a;border:1px solid var(--border);border-radius:10px;padding:18px;overflow-x:auto;
+    font-family:var(--mono);font-size:13px;line-height:1.7}
+  pre .c{color:var(--muted)} pre .g{color:var(--green)} pre .o{color:var(--orange)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-family:var(--mono);font-size:12px;padding:5px 11px;border:1px solid var(--border);border-radius:999px;
+    background:var(--surface);color:var(--text)}
+  .chip .d{color:var(--green)}
+
+  footer{padding:30px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
+  @media(max-width:640px){.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="ribbon">● Internal build — operator eyes only — do not share ●</div>
+
+<header>
+  <div class="wrap">
+    <div class="who">VibeHacking · operator console</div>
+    <h1>Welcome back, <span class="glow">BlackPC</span>.</h1>
+    <div class="by">Built by <b>BlackPC, Vine &amp; Foxxino Inc.</b> · this is your private edition — personal targets, notes, and workflow live here.</div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">00.</span> The Rule (yours to keep)</h2>
+    <div class="rule">
+      <p><b>1. Only your own apps</b> — or ones you hold written authorization for. Per-host, confirmed. If it isn't yours, you don't touch it.</p>
+      <p><b>2. Start black-box, then open the box.</b> It's your code — read the source to confirm a finding and ship the fix. Outside-in first, always.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">01.</span> Launch</h2>
+<pre><span class="c"># practice range</span>
+python testapp/app.py                          <span class="c"># NovaChat (vulnerable) :3456</span>
+python /home/user/secretvault/app.py           <span class="c"># SecretVault (hardened) :8700</span>
+
+<span class="c"># your workflow</span>
+python vibe.py <span class="g">scan</span> http://127.0.0.1:3456/
+python vibe.py <span class="g">attack</span> http://127.0.0.1:3456/ --skip-load
+python claude.py http://127.0.0.1:3456/ --objective <span class="o">"auth + secrets"</span>
+
+<span class="c"># health-watch one of your own apps</span>
+python TOOLS/noloader.py --url http://127.0.0.1:3456/ <span class="g">--health</span> -t 60s --expect-text ok
+
+<span class="c"># authorize a host you own before load-testing it</span>
+python vibe.py <span class="g">trust add</span> my-app.example
+</pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">02.</span> Console</h2>
+    <div class="cols">
+      <div class="panel">
+        <h3>Kill-chain</h3>
+        <ul>
+          <li>Recon <span class="m">— ash · spider · ghost · api_finder · cloud_scout</span></li>
+          <li>Headers <span class="m">— vibe_headers · corscan · phantom</span></li>
+          <li>Auth <span class="m">— leep · aukdoc · axios · random_roll</span></li>
+          <li>Injection <span class="m">— exploit_final · traversal_sniper · ssrf_probe · prompt_injector</span></li>
+          <li>Secrets <span class="m">— key_stealer · senoria · env_probe · deep_extract</span></li>
+          <li>Load <span class="m">— storm · vibe_api · maelstrom (gated)</span></li>
+        </ul>
+      </div>
+      <div class="panel warn">
+        <h3>Verify, don't trust</h3>
+        <ul>
+          <li>aukdoc <span class="m">— flags any 200 as a breach. Ignore on public roots.</span></li>
+          <li>cloud_scout <span class="m">— calls the public homepage "unprotected."</span></li>
+          <li>vibe_headers <span class="m">— X-XSS-Protection / HSTS-on-loopback = info, not critical.</span></li>
+          <li class="m">Full notes: .claude/agent-memory/security-exploit-auditor/</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">03.</span> Benchmarks on file</h2>
+    <div class="chips">
+      <span class="chip">NovaChat <span class="d">60 findings · key ×47</span></span>
+      <span class="chip">SecretVault <span class="d">0 extracted · held</span></span>
+      <span class="chip">suite <span class="d">25 tools ~2.5s</span></span>
+      <span class="chip">avg <span class="d">0.10s/tool</span></span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  VibeHacking · internal operator build · BlackPC, Vine &amp; Foxxino Inc. · keep authorization records off this page
+</footer>
+
+</body>
+</html>
