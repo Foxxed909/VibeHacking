@@ -50,9 +50,17 @@ Who can do what — and who shouldn't.
 | Tool | Role |
 |------|------|
 | `leep` | Logic-flow / auth-bypass auditor |
-| `aukdoc` | Authentication boundary auditor. *Note: reports any 200 as a "boundary breach" — meaningless against intended-public pages; verify* |
-| `axios` | IDOR / object-ID exposure scanner |
+| `aukdoc` | Authentication boundary auditor. *Now baseline/differential — a 200 is only a breach if the endpoint was actually protected* |
+| `axios` | IDOR / object-ID exposure scanner (unauthenticated) |
 | `random_roll` | Password-policy auditor — weak-password acceptance, lockout, enumeration |
+
+## 🔓 Authenticated Attacks — _internal edition only_
+The heavier artillery. Everything else hits the target unauthenticated; these
+log IN and attack from inside a real session, the way an actual attacker does.
+
+| Tool | Role |
+|------|------|
+| `intruder` | **Authenticated multi-account attack engine.** Stands up two throwaway accounts (attacker + victim), captures both sessions, harvests the victim's object IDs, then has the attacker try to reach them — a true differential cross-account IDOR test — plus vertical privilege-escalation probes and session-cookie analysis (HttpOnly/Secure/SameSite + token entropy). Endpoint-autodetects login/signup; override with `--login` / `--signup` / `--user-field`. Confirms only real, session-backed findings. |
 
 ## 💉 Injection & Input Attacks
 Send malformed input, watch what breaks.
