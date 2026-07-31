@@ -26,8 +26,12 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt   # stdlib-only: installs nothing, by design
 
-# 2. Run a deep scan against a target you own / are authorized to test
-python vibe.py scan http://127.0.0.1:5500/
+# 2a. (Optional) fire up the bundled practice target — a real, deliberately
+#     vulnerable app to test against. See testapp/README.md.
+python testapp/app.py            # serves http://localhost:3456/
+
+# 2b. Run a deep scan against a target you own / are authorized to test
+python vibe.py scan http://127.0.0.1:3456/
 
 # Scan served pages/assets for leaked API keys or tokens (redacted findings)
 python vibe.py senoria --scan localhost --i 4 -w 72
@@ -148,13 +152,24 @@ See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roste
 
 ---
 
-## ⚖️ The One Golden Rule
+## ⚖️ The Golden Rule
 
-> **Never read the project's source files directly. That's cheating.**
+> **1. Only ever test an app you own — or one you have explicit written
+> permission to test. No exceptions.**
+>
+> **2. Prefer black-box. Attack what you can see from the outside first, like a
+> real attacker would.**
 
-We go in blind — just like a real attacker would.
-Everything Antigravity learns, it learns through the live running app.
-No peeking at the code. No shortcuts. Black-box only. 🖤
+Rule 1 is the hard line and it is never negotiable. Authorization is per-app and
+per-host. If it isn't yours and you don't hold written permission, you don't
+touch it — recon included.
+
+Rule 2 is a *preference*, not a prohibition. Because the target is **your own
+app**, you're free to open the box — read its source, its logs, its config —
+whenever that makes the assessment better. Black-box keeps the sessions honest
+and realistic (if it can't be found from the outside, an external attacker
+can't either), so we start there. But grey/white-box on your own code is fully
+allowed and often the fastest path to a real fix. 🖤
 
 ---
 
@@ -200,14 +215,18 @@ payment, and incident response.
 
 ---
 
-## 💡 Why Browser Analysis (Not File Reading)?
+## 💡 Why Start Black-Box?
 
-Real penetration testing is **black-box** — you attack what you *see*, not what you *know*.
-Using Antigravity's browser reviewer to analyze the app through the web keeps things
-honest, realistic, and actually more fun. If it can't be found from the outside,
-it doesn't count as a real vulnerability anyway.
+Real-world penetration testing starts **black-box** — you attack what you *see*,
+not what you *know*. Analyzing your app through the live web interface keeps
+things honest and realistic: if a bug can't be found from the outside, an
+external attacker can't reach it either, so that's where the highest-severity
+findings live.
 
-Plus — it lines up perfectly with the golden rule. No file snooping. Ever.
+But since you're testing **your own app** (Golden Rule #1), you don't have to
+stay blind. Once black-box recon has mapped the surface, cracking open the
+source to confirm a finding and write the fix is not cheating — it's just good
+engineering. Start outside, then use whatever access you legitimately have.
 
 ---
 

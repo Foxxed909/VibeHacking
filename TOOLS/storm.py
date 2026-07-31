@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import re
 import statistics
@@ -338,7 +339,14 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
 
     rate = len(results) / elapsed
     p50 = statistics.median(latencies) if latencies else 0
-    p95 = sorted(latencies)[int(len(latencies) * 0.95) - 1] if latencies else 0
+    if latencies:
+        ordered = sorted(latencies)
+        # Nearest-rank percentile, clamped so tiny samples don't index to -1
+        # (which used to return the max and over-report p95).
+        idx = min(len(ordered) - 1, max(0, math.ceil(0.95 * len(ordered)) - 1))
+        p95 = ordered[idx]
+    else:
+        p95 = 0
     max_latency = max(latencies) if latencies else 0
 
     tool.log(f"Completed {len(results)} requests in {elapsed:.1f}s ({rate:.1f} req/s)")

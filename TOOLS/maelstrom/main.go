@@ -169,26 +169,26 @@ func validateTarget(raw string) error {
 		return nil
 	}
 
-	// A public host is permitted only if the operator has explicitly listed it
-	// in authorized_targets.txt (a host they own or have permission to test).
+	// A literal private/loopback/link-local IP is always allowed (a box on your
+	// own machine or LAN). This matches vibe.py's _is_local_or_private, which
+	// classifies IP literals only and does NOT resolve DNS.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return nil
+		}
+		return fmt.Errorf("refusing target %s: public IP not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host))
+	}
+
+	// Any hostname (public OR one that happens to resolve to a private IP) must
+	// be explicitly listed in authorized_targets.txt. We deliberately do NOT
+	// auto-allow based on DNS resolution: that let a hostname pointing at a
+	// private IP through here while vibe.py would have refused it, and it opened
+	// a DNS-rebinding-flavored gap. Authorization is per-host and explicit.
 	allowed := loadAuthorizedHosts()
 	if allowed[strings.ToLower(host)] {
 		return nil
 	}
-
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("target host must resolve before testing: %w", err)
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("target host resolved to no IPs")
-	}
-	for _, ip := range ips {
-		if !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
-			return fmt.Errorf("refusing target %s (%s): not a private/LAN/VPN host and not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host), displayIP(ip.String()))
-		}
-	}
-	return nil
+	return fmt.Errorf("refusing target %s: hostname not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host))
 }
 
 // loadAuthorizedHosts reads authorized_targets.txt (searched upward from the

@@ -24,6 +24,64 @@ let stats = { adsBlocked: 0, bandwidthSaved: 0, trackersBlocked: 0, timeSaved: 0
 let settings = { blockAds: true, privacyMode: false, cookieConsent: false, whitelist: [], tier: 'pro' };
 let passwords = [];
 
+// --------------------------------------------------------------------------
+// Vault encryption-at-rest (AES-GCM, key derived from a master passphrase via
+// PBKDF2). Secrets are never persisted in cleartext; the derived key lives only
+// in memory for the session. Legacy plaintext entries are read transparently
+// and re-encrypted the next time they're touched.
+// --------------------------------------------------------------------------
+const crypto_ = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : null;
+let vaultKey = null; // CryptoKey cached for the session
+
+const b64 = {
+    enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))),
+    dec: (str) => Uint8Array.from(atob(str), c => c.charCodeAt(0)),
+};
+
+function getVaultSalt() {
+    if (!settings.vaultSalt) {
+        const salt = crypto_.getRandomValues(new Uint8Array(16));
+        settings.vaultSalt = b64.enc(salt);
+        saveSettings();
+    }
+    return b64.dec(settings.vaultSalt);
+}
+
+async function getVaultKey() {
+    if (vaultKey) return vaultKey;
+    if (!crypto_) throw new Error('WebCrypto unavailable');
+    const passphrase = window.prompt('Enter your vault master passphrase:');
+    if (!passphrase) throw new Error('no passphrase');
+    const baseKey = await crypto_.subtle.importKey(
+        'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']
+    );
+    vaultKey = await crypto_.subtle.deriveKey(
+        { name: 'PBKDF2', salt: getVaultSalt(), iterations: 200000, hash: 'SHA-256' },
+        baseKey,
+        { name: 'AES-GCM', length: 256 },
+        false, ['encrypt', 'decrypt']
+    );
+    return vaultKey;
+}
+
+async function vaultEncrypt(plaintext) {
+    const key = await getVaultKey();
+    const iv = crypto_.getRandomValues(new Uint8Array(12));
+    const ct = await crypto_.subtle.encrypt(
+        { name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext)
+    );
+    return { ct: b64.enc(ct), iv: b64.enc(iv) };
+}
+
+async function vaultReveal(entry) {
+    if (!entry.enc) return entry.pass || ''; // legacy plaintext entry
+    const key = await getVaultKey();
+    const pt = await crypto_.subtle.decrypt(
+        { name: 'AES-GCM', iv: b64.dec(entry.enc.iv) }, key, b64.dec(entry.enc.ct)
+    );
+    return new TextDecoder().decode(pt);
+}
+
 // DOM Elements
 const tabs = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
@@ -121,20 +179,27 @@ document.getElementById('closeForm').addEventListener('click', () => {
     vaultForm.style.display = 'none';
 });
 
-document.getElementById('savePassword').addEventListener('click', () => {
+document.getElementById('savePassword').addEventListener('click', async () => {
     const site = document.getElementById('passSite').value.trim();
     const user = document.getElementById('passUser').value.trim();
     const pass = document.getElementById('passValue').value.trim();
-    
-    if (site && user && pass) {
-        passwords.push({ id: Date.now(), site, user, pass });
-        storage.set({ passwords }, () => {
-            renderPasswordList();
-            vaultForm.style.display = 'none';
-            clearForm();
-            showToast('Password Saved!');
-        });
+
+    if (!(site && user && pass)) return;
+
+    const entry = { id: Date.now(), site, user };
+    try {
+        entry.enc = await vaultEncrypt(pass); // store ciphertext, never the raw value
+    } catch (e) {
+        showToast('Vault locked — not saved');
+        return;
     }
+    passwords.push(entry);
+    storage.set({ passwords }, () => {
+        renderPasswordList();
+        vaultForm.style.display = 'none';
+        clearForm();
+        showToast('Password Saved!');
+    });
 });
 
 function clearForm() {
@@ -144,31 +209,64 @@ function clearForm() {
 }
 
 function renderPasswordList() {
+    // Build the list with DOM nodes and textContent. Never interpolate stored
+    // vault fields (site/user/pass) into an HTML or inline-handler string —
+    // those values are attacker-influenceable and would execute as XSS in the
+    // popup's privileged context, exposing the whole vault.
+    passwordList.textContent = '';
+
     if (passwords.length === 0) {
-        passwordList.innerHTML = `<div style="text-align: center; opacity: 0.5; padding: 20px; font-size: 13px;">No passwords saved yet.</div>`;
+        const empty = document.createElement('div');
+        empty.style.cssText = 'text-align: center; opacity: 0.5; padding: 20px; font-size: 13px;';
+        empty.textContent = 'No passwords saved yet.';
+        passwordList.appendChild(empty);
         return;
     }
-    
-    passwordList.innerHTML = '';
+
     passwords.forEach(p => {
         const item = document.createElement('div');
         item.className = 'password-item';
-        item.innerHTML = `
-            <div class="pass-site">${p.site}</div>
-            <div class="pass-user">${p.user}</div>
-            <div class="pass-actions">
-                <button class="action-btn" onclick="copyToClipboard('${p.pass}')">Copy</button>
-                <button class="action-btn" style="color: #fc8181;" onclick="deletePassword(${p.id})">Delete</button>
-            </div>
-        `;
+
+        const site = document.createElement('div');
+        site.className = 'pass-site';
+        site.textContent = p.site;
+
+        const user = document.createElement('div');
+        user.className = 'pass-user';
+        user.textContent = p.user;
+
+        const actions = document.createElement('div');
+        actions.className = 'pass-actions';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'action-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.addEventListener('click', () => copyToClipboard(p.id));
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'action-btn';
+        delBtn.style.color = '#fc8181';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => deletePassword(p.id));
+
+        actions.append(copyBtn, delBtn);
+        item.append(site, user, actions);
         passwordList.appendChild(item);
     });
 }
 
-window.copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => {
-        showToast('Password Copied!');
-    });
+// Copy by id (not by inlining the secret into markup). Decrypts on demand.
+window.copyToClipboard = async (id) => {
+    const entry = passwords.find(p => p.id === id);
+    if (!entry) return;
+    let secret;
+    try {
+        secret = await vaultReveal(entry);
+    } catch (e) {
+        showToast('Unlock failed');
+        return;
+    }
+    navigator.clipboard.writeText(secret).then(() => showToast('Password Copied!'));
 };
 
 window.deletePassword = (id) => {

@@ -12,12 +12,6 @@ TOOLS_DIR = os.path.join(ROOT, "TOOLS")
 LOCKED_MANIFEST = os.path.join(ROOT, "vb", "locked", "manifest.json")
 LOG_DIR = os.path.join(ROOT, "logs")
 
-# Honor-system plan gating. Importable whether cli.py runs as a script or module.
-_VB_DIR = os.path.dirname(os.path.abspath(__file__))
-if _VB_DIR not in sys.path:
-    sys.path.insert(0, _VB_DIR)
-import plans  # noqa: E402
-
 VIBE_COMMANDS = {
     "scan",
     "report",
@@ -54,7 +48,6 @@ MENU_ITEMS = [
     ("Privacy controls", "privacy"),
     ("Trusted target list", "trust_list"),
     ("Locked tools", "locked"),
-    ("Plan & unlock status", "plan"),
 ]
 
 
@@ -153,11 +146,6 @@ def _route_vibe(args):
 
 def _run_tool(tool, args):
     help_only = any(arg in {"-h", "--help", "-v", "--version"} for arg in args)
-    if not help_only:
-        allowed, msg = plans.gate(tool)
-        if not allowed:
-            print(msg)
-            return 2
     if tool in _locked_tools() and not help_only and not _confirm_locked(tool):
         return 2
 
@@ -189,10 +177,6 @@ def _print_help():
               vibe <tool> [args...]          Shortcut for runnable tools
               vibe locked                    Show locked authorized-only tools
               vibe trust add <host>          Authorize a host you own
-              vibe plan                      Show the active Vibe plan + limits
-              vibe setplan <free|pro|elite>  Choose a plan (persists)
-              vibe unlock <code>             Founder override -> top tier (logged)
-              vibe lock                      Drop the founder override
 
             Examples:
               vibe / 
@@ -329,10 +313,6 @@ def _interactive():
         return _route_vibe(["trust", "list"])
     if action == "locked":
         return _print_locked()
-    if action == "plan":
-        for line in plans.describe():
-            print(line)
-        return 0
 
     print(f"[-] No handler for picker action: {action}")
     return 2
@@ -354,32 +334,6 @@ def main(argv=None):
 
     if command in {"list", "tools"}:
         return _print_tools(plain="--plain" in rest)
-
-    if command == "plan":
-        for line in plans.describe():
-            print(line)
-        return 0
-
-    if command == "unlock":
-        if not rest:
-            print("[-] Usage: vibe unlock <code>")
-            return 2
-        ok, msg = plans.unlock(rest[0])
-        print(msg)
-        return 0 if ok else 2
-
-    if command == "lock":
-        had = plans.lock()
-        print("[+] Founder override cleared." if had else "[=] No override was active.")
-        return 0
-
-    if command == "setplan":
-        if not rest:
-            print(f"[-] Usage: vibe setplan <{'|'.join(plans.TIER_ORDER)}>")
-            return 2
-        ok, msg = plans.set_plan(rest[0])
-        print(msg)
-        return 0 if ok else 2
 
     if command == "locked":
         if rest[:1] == ["run"] and len(rest) >= 2:

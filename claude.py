@@ -174,10 +174,16 @@ TARGET (locked — every tool runs against this, you cannot retarget):
   Host: {host}
   Scope: {scope_label}
 {objective_line}
-THE GOLDEN RULE — black-box only. You attack what you can SEE from the outside.
-You never have, and never ask for, the target's source code. Everything you learn,
-you learn through the live app via the tools. If it can't be found from the
-outside, it isn't a real finding.
+THE GOLDEN RULE
+1. Authorization is absolute. This target is one the operator OWNS or is
+   explicitly authorized to test. You never probe anything else — not even
+   recon. If a lead points at an out-of-scope host, you stop.
+2. Start black-box. Attack what you can SEE from the outside first, through the
+   live app via the tools — that's where externally-reachable (highest-severity)
+   findings live. Because this is the operator's own app, using source or logs
+   to CONFIRM a finding and recommend a fix is allowed; you just lead with the
+   outside-in view and never treat source access as a substitute for proving a
+   bug is reachable from the outside.
 
 HOW YOU WORK:
 - Recon first. Begin with surface mapping (ash, spider, ghost, api_finder,
@@ -542,20 +548,6 @@ def main(argv=None):
         print(f"\n[dry-run] {len(AUDIT_TOOLS)} audit tools + {len(LOAD_TOOLS)} gated load tools exposed.")
         print("[dry-run] Set ANTHROPIC_API_KEY and drop --dry-run to run for real.")
         return 0
-
-    # Plan gate (honor-system): the autonomous brain is a Vibe Pro feature.
-    # --dry-run / --list-tools above stay free as a preview. Never let plan
-    # gating crash the brain — degrade to allowed if the module can't load.
-    try:
-        from vb import plans
-        if not plans.entitlements().get("allow_brain", True):
-            tier_label = plans.TIERS[plans.active_tier()]["label"]
-            print(f"\n🔒 The Claude brain is a Vibe Pro feature — you're on {tier_label}.")
-            print("   Upgrade, set VIBE_PLAN=pro, or run `vibe unlock <code>` with a founder code.")
-            print("   (Use --dry-run to preview the run plan for free.)")
-            return 2
-    except Exception:
-        pass
 
     if not vibe._is_local_or_private(host) and not args.yes:
         print(f"\n[!] {host} is an external host. Only proceed for a site you own")
