@@ -1,3 +1,3 @@
 module maelstrom
 
-go 1.26
+go 1.20
