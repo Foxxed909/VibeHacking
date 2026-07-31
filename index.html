@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeHacking — Self-Hosted Black-Box Pentest Toolkit</title>
+<style>
+  :root{
+    --bg:#070b0f; --surface:#0d1117; --surface2:#111926; --border:#1e2d3d;
+    --green:#00ff87; --green-dim:#00cc6a; --red:#ff4d4d; --orange:#ff8c00;
+    --blue:#4fa3ff; --purple:#c678dd; --cyan:#00e5ff; --pink:#ff4da6;
+    --text:#cdd9e5; --muted:#5c6e7a;
+    --mono:'JetBrains Mono','Fira Code','Courier New',monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;
+    background-image:radial-gradient(circle at 20% -10%,rgba(0,255,135,.08),transparent 45%),
+                     radial-gradient(circle at 90% 0%,rgba(79,163,255,.06),transparent 40%);}
+  a{color:var(--green);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:960px;margin:0 auto;padding:0 20px}
+  code,.mono{font-family:var(--mono)}
+
+  header{padding:72px 0 40px;text-align:center;border-bottom:1px solid var(--border)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.15em;
+    text-transform:uppercase;color:var(--green);border:1px solid var(--border);
+    border-radius:999px;padding:5px 14px;margin-bottom:22px;background:var(--surface)}
+  h1{font-size:clamp(34px,7vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+  h1 .glow{color:var(--green);text-shadow:0 0 24px rgba(0,255,135,.45)}
+  .sub{margin:20px auto 0;max-width:640px;color:var(--muted);font-size:17px}
+  .cta{margin-top:30px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{font-family:var(--mono);font-size:14px;padding:11px 20px;border-radius:8px;
+    border:1px solid var(--border);background:var(--surface);color:var(--text);display:inline-block}
+  .btn.primary{background:var(--green);color:#05231a;border-color:var(--green);font-weight:700}
+  .btn:hover{text-decoration:none;border-color:var(--green)}
+
+  section{padding:52px 0;border-bottom:1px solid var(--border)}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.18em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:24px}
+  h2 .n{color:var(--green)}
+
+  .rule{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--green);
+    border-radius:10px;padding:22px 24px}
+  .rule p{margin:0 0 10px}
+  .rule p:last-child{margin:0}
+  .rule b{color:var(--text)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;
+    transition:border-color .15s,transform .15s}
+  .card:hover{border-color:var(--accent,var(--green));transform:translateY(-2px)}
+  .card h3{font-family:var(--mono);font-size:15px;color:var(--accent,var(--green));margin-bottom:6px}
+  .card .count{float:right;font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .card p{font-size:13.5px;color:var(--muted)}
+  .c-recon{--accent:var(--blue)} .c-head{--accent:var(--cyan)} .c-auth{--accent:var(--orange)}
+  .c-inj{--accent:var(--pink)} .c-sec{--accent:var(--red)} .c-load{--accent:var(--purple)}
+  .c-rep{--accent:#ffb347} .c-avail{--accent:var(--green)}
+
+  .targets{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .target{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px}
+  .target.vuln{border-top:3px solid var(--red)}
+  .target.hard{border-top:3px solid var(--green)}
+  .target h3{font-size:18px;font-family:var(--mono)}
+  .target .badge{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:5px;
+    display:inline-block;margin:8px 0}
+  .target.vuln .badge{background:rgba(255,77,77,.12);color:var(--red)}
+  .target.hard .badge{background:rgba(0,255,135,.12);color:var(--green)}
+  .target p{font-size:13.5px;color:var(--muted)}
+
+  pre{background:#05080b;border:1px solid var(--border);border-radius:10px;padding:18px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.7}
+  pre .c{color:var(--muted)} pre .g{color:var(--green)}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;text-align:center}
+  .stat .num{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--green)}
+  .stat .lbl{font-size:12.5px;color:var(--muted);margin-top:4px}
+
+  footer{padding:36px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12.5px}
+
+  @media(max-width:640px){.targets{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <span class="tag">Black-box · Self-hosted · Zero-dependency</span>
+    <h1>Vibe<span class="glow">Hacking</span></h1>
+    <p class="sub">A self-hosted penetration-testing toolkit for breaking your <b style="color:var(--text)">own</b> apps
+      before anyone else does. 30+ probes, an autonomous Claude driver, and two practice targets — all standard-library Python.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quickstart">Quickstart</a>
+      <a class="btn" href="TOOLS/CATALOG.md">Tool catalog</a>
+      <a class="btn" href="landing.html">Browse all tools →</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">01.</span> The Golden Rule</h2>
+    <div class="rule">
+      <p><b>1. Authorization is absolute.</b> Only ever test an app you own or have explicit written permission to test. Recon included. No exceptions.</p>
+      <p><b>2. Start black-box.</b> Attack what you can see from the outside first — that's where externally-reachable, high-severity bugs live. Because the target is your own app, cracking open the source to confirm a finding and write the fix is fair game, not cheating.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">02.</span> What's in the box</h2>
+    <div class="grid">
+      <div class="card c-recon"><h3>Recon</h3><span class="count">6</span><p>DNS/TLS/WAF fingerprint, crawler, hidden-endpoint & cloud discovery.</p></div>
+      <div class="card c-avail"><h3>Availability</h3><span class="count">1</span><p>Health monitor for your own app — uptime %, latency percentiles, flap detection.</p></div>
+      <div class="card c-head"><h3>Headers</h3><span class="count">4</span><p>CSP/HSTS audit, CORS misconfig, cookie flags, header injection.</p></div>
+      <div class="card c-auth"><h3>Auth &amp; Access</h3><span class="count">4</span><p>Auth-bypass, boundary, IDOR, and password-policy auditors.</p></div>
+      <div class="card c-inj"><h3>Injection</h3><span class="count">9</span><p>XSS confirmer, traversal, SSRF, open-redirect, LLM prompt-injection, fuzzing.</p></div>
+      <div class="card c-sec"><h3>Secrets</h3><span class="count">6</span><p>API-key extraction, env/stack-trace leaks, served-asset secret scanning.</p></div>
+      <div class="card c-load"><h3>Load &amp; Stress</h3><span class="count">3</span><p>Gated, rate-capped stressors — localhost / private / allowlisted only.</p></div>
+      <div class="card c-rep"><h3>Reporting</h3><span class="count">6</span><p>Executive dashboard, PoC generator, session backup, cleanup.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">03.</span> Two practice targets, benchmarked</h2>
+    <div class="targets">
+      <div class="target vuln">
+        <h3>NovaChat</h3>
+        <span class="badge">DELIBERATELY VULNERABLE</span>
+        <p>A real AI-chat app with genuine, exploitable bugs: stored XSS, key-in-error-trace,
+          SSRF, <code>alg:none</code> JWT bypass, IDOR, traversal. The tools lit up —
+          <b style="color:var(--red)">60 findings, key extracted 47×</b>.</p>
+      </div>
+      <div class="target hard">
+        <h3>SecretVault</h3>
+        <span class="badge">HARDENED CONTROL</span>
+        <p>An independently-built AES-256-GCM + scrypt vault. The honest "comes up empty":
+          the key store held — <b style="color:var(--green)">0 secrets extracted</b>,
+          only defense-in-depth header notes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">04.</span> Speed</h2>
+    <div class="stats">
+      <div class="stat"><div class="num">25</div><div class="lbl">audit tools / run</div></div>
+      <div class="stat"><div class="num">~2.5s</div><div class="lbl">full suite wall-clock</div></div>
+      <div class="stat"><div class="num">0.10s</div><div class="lbl">avg per tool</div></div>
+      <div class="stat"><div class="num">0</div><div class="lbl">pip installs</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <h2><span class="n">05.</span> Quickstart</h2>
+<pre><span class="c"># 1. spin up the bundled vulnerable target</span>
+python testapp/app.py                         <span class="c"># http://localhost:3456/</span>
+
+<span class="c"># 2. deep scan it</span>
+python vibe.py <span class="g">scan</span> http://127.0.0.1:3456/
+
+<span class="c"># 3. run the whole ordered kill-chain</span>
+python vibe.py <span class="g">attack</span> http://127.0.0.1:3456/ --skip-load
+
+<span class="c"># 4. watch your own app's health (uptime %, latency, flapping)</span>
+python TOOLS/noloader.py --url http://127.0.0.1:3456/ <span class="g">--health</span> -t 60s --expect-text ok
+
+<span class="c"># 5. let Claude drive it autonomously</span>
+python claude.py http://127.0.0.1:3456/ --objective <span class="g">"auth and secrets"</span>
+</pre>
+  </div>
+</section>
+
+<footer>
+  VibeHacking · self-hosted black-box pentest toolkit · test only what you own or are authorized to test · no harm, no foul
+</footer>
+
+</body>
+</html>
