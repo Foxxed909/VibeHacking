@@ -54,13 +54,16 @@ Who can do what — and who shouldn't.
 | `axios` | IDOR / object-ID exposure scanner (unauthenticated) |
 | `random_roll` | Password-policy auditor — weak-password acceptance, lockout, enumeration |
 
-## 🔓 Authenticated Attacks — _internal edition only_
-The heavier artillery. Everything else hits the target unauthenticated; these
-log IN and attack from inside a real session, the way an actual attacker does.
+## 🔥 Advanced Attacks — _internal edition only_
+The heavier artillery. Everything else hits the target unauthenticated and
+error-based; these log in, forge credentials, and go blind — the way an actual
+attacker does. All confirm only real, verified findings.
 
 | Tool | Role |
 |------|------|
-| `intruder` | **Authenticated multi-account attack engine.** Stands up two throwaway accounts (attacker + victim), captures both sessions, harvests the victim's object IDs, then has the attacker try to reach them — a true differential cross-account IDOR test — plus vertical privilege-escalation probes and session-cookie analysis (HttpOnly/Secure/SameSite + token entropy). Endpoint-autodetects login/signup; override with `--login` / `--signup` / `--user-field`. Confirms only real, session-backed findings. |
+| `intruder` | **Authenticated multi-account attack engine.** Stands up two throwaway accounts (attacker + victim), captures both sessions, harvests the victim's object IDs, then has the attacker try to reach them — a true differential cross-account IDOR test — plus vertical privilege-escalation probes and session-cookie analysis (HttpOnly/Secure/SameSite + token entropy). Endpoint-autodetects login/signup. |
+| `jwt_forge` | **Schema-adaptive JWT forgery.** Obtains a real token, decodes the actual claim schema, escalates the privilege claims *that token uses*, and forges `alg:none` (all case variants) + weak-secret HS256 (recovers the secret from a wordlist and re-signs). Sends each to a protected endpoint and confirms which unlock it. `--login`/`--token`/`--protected`/`--token-mode`. |
+| `blind_sqli` | **Boolean- and time-based blind SQLi detector.** Boolean: diffs a TRUE-condition vs a FALSE-condition response against the baseline. Time: injects DB-specific sleeps (MySQL/PostgreSQL/MSSQL/sqlite-heavy) and confirms via response stall. Catches silent injection the error/reflection tools miss. `--param`/`--method`/`--value`. |
 
 ## 💉 Injection & Input Attacks
 Send malformed input, watch what breaks.
