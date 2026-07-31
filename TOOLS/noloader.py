@@ -54,46 +54,73 @@ def _normalize_url(raw, auto_scheme=False):
     return url
 
 
-def _state_from_result(status, treat_4xx_down, fail_status):
+def _state_from_result(status, treat_4xx_down, fail_status, text_ok=True):
     if status == 0:
         return "NO-LOAD"
     if treat_4xx_down and status >= 400:
         return "NO-LOAD"
     if status >= fail_status:
         return "NO-LOAD"
+    if not text_ok:
+        # Reachable but the expected health string was absent — treat as down
+        # for monitoring purposes (a 200 that isn't actually serving your app).
+        return "NO-LOAD"
     return "LOADED"
 
 
-def _probe(url, method, timeout, max_bytes):
+def _percentile(values, pct):
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    import math
+    idx = min(len(ordered) - 1, max(0, math.ceil(pct / 100 * len(ordered)) - 1))
+    return ordered[idx]
+
+
+def _text_ok(body_bytes, expect_text):
+    if not expect_text:
+        return True
+    try:
+        return expect_text.lower() in body_bytes.decode("utf-8", "replace").lower()
+    except Exception:
+        return False
+
+
+def _probe(url, method, timeout, max_bytes, expect_text=""):
     headers = {
         "User-Agent": privacy_user_agent("NoLoader"),
         "Accept": "text/html,application/json,*/*",
         "DNT": "1",
         "Sec-GPC": "1",
     }
+    # A health-string check needs a body, so force a GET with enough bytes.
+    if expect_text and method == "HEAD":
+        method = "GET"
+    read_bytes = max(max_bytes, 65536) if expect_text else max_bytes
     started = time.perf_counter()
     try:
         req = urllib.request.Request(url, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            if method != "HEAD":
-                response.read(max_bytes)
+            body = response.read(read_bytes) if method != "HEAD" else b""
             return {
                 "status": response.getcode(),
                 "latency_ms": (time.perf_counter() - started) * 1000,
                 "content_type": response.headers.get("Content-Type", ""),
                 "server": response.headers.get("Server", ""),
+                "text_ok": _text_ok(body, expect_text),
                 "error": "",
             }
     except urllib.error.HTTPError as exc:
         try:
-            exc.read(max_bytes)
+            body = exc.read(read_bytes)
         except Exception:
-            pass
+            body = b""
         return {
             "status": exc.code,
             "latency_ms": (time.perf_counter() - started) * 1000,
             "content_type": exc.headers.get("Content-Type", ""),
             "server": exc.headers.get("Server", ""),
+            "text_ok": _text_ok(body, expect_text),
             "error": "",
         }
     except (TimeoutError, socket.timeout) as exc:
@@ -102,6 +129,7 @@ def _probe(url, method, timeout, max_bytes):
             "latency_ms": (time.perf_counter() - started) * 1000,
             "content_type": "",
             "server": "",
+            "text_ok": False,
             "error": f"timeout: {exc}",
         }
     except Exception as exc:
@@ -110,13 +138,14 @@ def _probe(url, method, timeout, max_bytes):
             "latency_ms": (time.perf_counter() - started) * 1000,
             "content_type": "",
             "server": "",
+            "text_ok": False,
             "error": str(exc),
         }
 
 
 class NoLoader(VibeTool):
     def __init__(self):
-        super().__init__("NoLoader", "URL No-Load Window Verifier")
+        super().__init__("NoLoader", "App Availability & No-Load Window Monitor")
 
     def _log_probe(self, index, result, state, expected_state):
         level = "pass" if state == expected_state else "fail"
@@ -143,6 +172,7 @@ class NoLoader(VibeTool):
         max_bytes,
         keep_watching,
         json_output,
+        expect_text="",
     ):
         self.banner()
 
@@ -167,11 +197,15 @@ class NoLoader(VibeTool):
         first_unexpected = None
         probe_index = 0
 
+        if expect_text:
+            self.log(f"Health check: a LOADED probe must contain '{expect_text}' in the body.")
+
         def do_probe():
             nonlocal expected_streak, unexpected_seen, first_unexpected, probe_index
             probe_index += 1
-            result = _probe(url, method, request_timeout, max_bytes)
-            state = _state_from_result(result["status"], treat_4xx_down, fail_status)
+            result = _probe(url, method, request_timeout, max_bytes, expect_text)
+            state = _state_from_result(result["status"], treat_4xx_down, fail_status,
+                                       result.get("text_ok", True))
             result["state"] = state
             result["probe"] = probe_index
             samples.append(result)
@@ -191,7 +225,10 @@ class NoLoader(VibeTool):
             do_probe()
             if not expect_up and unexpected_seen and not keep_watching:
                 break
-            if expect_up and expected_streak >= force:
+            # In health/monitor mode (keep_watching) keep sampling the whole
+            # window so uptime %, latency, and flap stats are meaningful instead
+            # of stopping the instant the app answers once.
+            if expect_up and expected_streak >= force and not keep_watching:
                 break
 
             now = time.perf_counter()
@@ -210,6 +247,27 @@ class NoLoader(VibeTool):
         elapsed = time.perf_counter() - started
         success = expected_streak >= force and (expect_up or not unexpected_seen)
 
+        # Availability & latency stats — the useful part for watching your own app.
+        up_samples = sum(1 for s in samples if s["state"] == "LOADED")
+        down_samples = len(samples) - up_samples
+        uptime_pct = round(100.0 * up_samples / len(samples), 1) if samples else 0.0
+        transitions = sum(
+            1 for a, b in zip(samples, samples[1:]) if a["state"] != b["state"]
+        )
+        up_latencies = [s["latency_ms"] for s in samples if s["state"] == "LOADED"]
+        latency = {
+            "avg_ms": round(sum(up_latencies) / len(up_latencies), 1) if up_latencies else 0.0,
+            "p50_ms": round(_percentile(up_latencies, 50), 1),
+            "p95_ms": round(_percentile(up_latencies, 95), 1),
+            "max_ms": round(max(up_latencies), 1) if up_latencies else 0.0,
+        }
+        if uptime_pct >= 99.5 and transitions == 0:
+            health = "HEALTHY"
+        elif uptime_pct >= 80.0:
+            health = "DEGRADED"
+        else:
+            health = "DOWN"
+
         summary = {
             "url": url,
             "expected": expected_state,
@@ -220,7 +278,28 @@ class NoLoader(VibeTool):
             "final_streak": expected_streak,
             "unexpected_seen": unexpected_seen,
             "first_unexpected": first_unexpected,
+            "uptime_pct": uptime_pct,
+            "up_samples": up_samples,
+            "down_samples": down_samples,
+            "state_transitions": transitions,
+            "latency": latency,
+            "health": health,
         }
+
+        # Availability report — always shown; this is what makes it useful for
+        # keeping an eye on your own local/personal apps.
+        icon = {"HEALTHY": "🟢", "DEGRADED": "🟡", "DOWN": "🔴"}[health]
+        self.log("── availability ──────────────────────────────")
+        self.log(
+            f"{icon} {health}  uptime={uptime_pct}%  up={up_samples}/{len(samples)}  "
+            f"flaps={transitions}",
+            "pass" if health == "HEALTHY" else ("warn" if health == "DEGRADED" else "fail"),
+        )
+        if up_latencies:
+            self.log(
+                f"latency ms: avg={latency['avg_ms']} p50={latency['p50_ms']} "
+                f"p95={latency['p95_ms']} max={latency['max_ms']}"
+            )
 
         if success:
             self.log(
@@ -243,7 +322,9 @@ class NoLoader(VibeTool):
 
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="NoLoader - verify that a URL stays unavailable for a time window without generating load."
+        description="NoLoader - watch your own app's availability with safe, serial (no-load) probes. "
+                    "Use --health to monitor uptime %/latency/flapping for an app you expect UP, or "
+                    "the default mode to confirm a URL stays DOWN for a window."
     )
     parser.add_argument("tokens", nargs="*", help="Optional URL and shorthand duration tokens such as t-60")
     parser.add_argument("--url", "--urlx", "-urlx", dest="url", default="", help="Target URL")
@@ -258,6 +339,12 @@ def _parse_args(argv):
     parser.add_argument("--fail-status", type=int, default=500, help="HTTP status at or above this counts as no-load")
     parser.add_argument("--max-bytes", type=int, default=2048, help="Maximum response bytes to read per GET probe")
     parser.add_argument("--keep-watching", action="store_true", help="Keep sampling until the time window ends after an unexpected state")
+    parser.add_argument(
+        "--health", action="store_true",
+        help="Health-monitor mode for your own app: expect it UP, watch the whole window, "
+             "and report uptime %%, latency, and flapping.",
+    )
+    parser.add_argument("--expect-text", default="", help="Substring that must appear in the body for a probe to count as healthy (e.g. 'ok' or 'healthy')")
     parser.add_argument("--auto-scheme", action="store_true", help="Prefix https:// when the URL has no scheme")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable summary")
     parser.add_argument("-v", "--version", action="version", version="NoLoader 1.0.0")
@@ -292,6 +379,10 @@ def _parse_args(argv):
 
 def main(argv=None):
     args, url, duration = _parse_args(sys.argv[1:] if argv is None else argv)
+    # --health is the "watch my own app" preset: expect it up and sample the
+    # whole window so uptime %% / latency / flap stats are meaningful.
+    expect_up = args.expect_up or args.health
+    keep_watching = args.keep_watching or args.health
     return NoLoader().run(
         url=url,
         duration=duration,
@@ -300,12 +391,13 @@ def main(argv=None):
         force=args.force,
         force_x=args.force_x,
         method=args.method,
-        expect_up=args.expect_up,
+        expect_up=expect_up,
         treat_4xx_down=args.treat_4xx_down,
         fail_status=args.fail_status,
         max_bytes=args.max_bytes,
-        keep_watching=args.keep_watching,
+        keep_watching=keep_watching,
         json_output=args.json,
+        expect_text=args.expect_text,
     )
 
 

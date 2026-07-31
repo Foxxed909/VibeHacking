@@ -5,9 +5,13 @@ Every tool in `TOOLS/`, grouped by what it does. All tools inherit from
 session, banner) and run standalone via `python TOOLS/<tool>.py --url <target>`
 or through the `vibe.py` orchestrator.
 
-> Scope reminder: these are for **your own apps** and **in-scope, authorized
-> bug-bounty targets** only. Load/stress tools are restricted to localhost,
-> private targets, and exact public hosts you explicitly authorize.
+> **Golden Rule:** these are for apps you **own** or are **explicitly authorized**
+> to test. Load/stress tools are restricted to localhost, private targets, and
+> exact public hosts you add to `authorized_targets.txt`.
+
+Two practice targets ship with the repo so you can exercise everything below:
+- **`testapp/` (NovaChat)** — a deliberately vulnerable AI-chat app; every tool lands real findings.
+- **`/home/user/secretvault/` (SecretVault)** — a hardened, fully-encrypted vault; the honest "comes up empty" control.
 
 ---
 
@@ -21,22 +25,21 @@ Map the attack surface before touching it.
 | `ghost` | Sensitive asset finder — hunts exposed files, backups, dotfiles |
 | `api_finder` | Hidden endpoint discovery — guesses/derives undocumented API paths |
 | `api_check` | Single-endpoint checker — quick one-off probe of a specific route |
-| `cloud_scout` | Cloud environment prober — metadata endpoints, bucket/role hints |
+| `cloud_scout` | Cloud environment prober — metadata endpoints, bucket/role hints. *Note: flags any public 200 as "unprotected" — verify before trusting* |
 
-## Availability & Resilience
-Confirm whether a URL loads, fails, or stays unavailable without generating
-stress traffic.
+## 📶 Availability & Health
+Watch your own app without generating stress traffic.
 
 | Tool | Role |
 |------|------|
-| `noloader` | No-load window verifier — serial URL probes, e.g. `python vibe.py --noloader -urlx https://example.com t-60 -f 3 -fx 7` |
+| `noloader` | **App availability & health monitor.** `--health` watches an app you expect UP and reports uptime %, latency (avg/p50/p95/max), and flapping; `--expect-text` asserts a health string in the body. Default mode confirms a URL stays DOWN for a window. Serial probes only — never floods. e.g. `python TOOLS/noloader.py --url http://127.0.0.1:3456/ --health -t 30s --expect-text ok` |
 
 ## 🛡️ Headers & Transport Security
 What the server tells the browser to do (or fails to).
 
 | Tool | Role |
 |------|------|
-| `vibe_headers` | HTTP security-policy auditor — CSP, HSTS, X-Frame-Options, etc. |
+| `vibe_headers` | HTTP security-policy auditor — CSP, HSTS, X-Frame-Options, etc. *Note: flags deprecated X-XSS-Protection and HSTS-on-loopback as critical — treat those as info* |
 | `corscan` | CORS misconfiguration scanner — reflected origins, credentialed wildcards |
 | `phantom` | Cookie & session-token analyzer — HttpOnly/Secure/SameSite flags |
 | `header_inject` | HTTP header injection & Host-header poisoning suite |
@@ -47,9 +50,9 @@ Who can do what — and who shouldn't.
 | Tool | Role |
 |------|------|
 | `leep` | Logic-flow / auth-bypass auditor |
-| `aukdoc` | Authentication boundary auditor |
+| `aukdoc` | Authentication boundary auditor. *Note: reports any 200 as a "boundary breach" — meaningless against intended-public pages; verify* |
 | `axios` | IDOR / object-ID exposure scanner |
-| `random_roll` | Password-policy auditor |
+| `random_roll` | Password-policy auditor — weak-password acceptance, lockout, enumeration |
 
 ## 💉 Injection & Input Attacks
 Send malformed input, watch what breaks.
@@ -60,10 +63,11 @@ Send malformed input, watch what breaks.
 | `fuzz_vibe` | URL parameter fuzzer |
 | `biz_logic` | Business-logic & parameter-pollution fuzzer |
 | `redirect` | Open-redirect scanner |
-| `traversal_sniper` | Targeted path traversal (e.g. `.env` key extraction) |
-| `ssrf_probe` | Server-side request forgery (via computer-use sessions) |
-| `prompt_injector` | LLM prompt-injection attack suite |
-| `timebomb` | Timing-attack detector |
+| `traversal_sniper` | Path traversal / LFI for `.env` & config files. `--app-root <path>` adds precise absolute-path payloads when a stack trace leaks the real root |
+| `ssrf_probe` | Server-side request forgery (via computer-use / instruct endpoints) |
+| `prompt_injector` | LLM prompt-injection suite (targets `/api/chat`-style endpoints) |
+| `timebomb` | Timing-attack / timing-oracle detector |
+| `exploit_final` | **Reflected/stored XSS confirmer** — injects a unique canary, reads it back, and reports a finding only if it comes back *unescaped*. `--field` picks the body field, `--check-url` reads a stored-XSS surface |
 
 ## 🗝️ Secrets & Data Exposure
 Find the things that should never have left the server.
@@ -71,20 +75,21 @@ Find the things that should never have left the server.
 | Tool | Role |
 |------|------|
 | `env_probe` | Environment-variable & stack-trace leakage probe |
-| `senoria` | Public web asset secret scanner — crawls served pages/JS/config for API-key/token leaks; `--show-keys` reveals raw matches for localhost/private targets only |
+| `senoria` | Public web asset secret scanner — crawls served pages/JS/config for API-key/token leaks. Redacts by default; `--show-keys` reveals raw matches for localhost/private targets only |
 | `deep_extract` | Focused API-key deep extraction |
-| `key_stealer` | Multi-vector API-key extraction suite |
+| `key_stealer` | Multi-vector API-key extraction (injection, error-based, header oracle, SSRF, config-mining). Redacts findings by default; `--show-keys` reveals raw on your own app |
 | `credit_drain` | API credit-drain / rate-limit auditor |
+| `exploit_vault` | Generates a localStorage-exfil XSS payload (PoC for a confirmed XSS sink) |
 
-## Load & Stress - _localhost, private, or explicitly trusted targets only_
+## 🔥 Load & Stress — _localhost, private, or explicitly trusted targets only_
 Capacity and rate-limit testing. Public hosts require an exact entry in
-`authorized_targets.txt` plus confirmation.
+`authorized_targets.txt` plus a typed confirmation, and are rate-capped.
 
 | Tool | Role |
 |------|------|
-| `storm` | Authorized-target traffic stressor (Python) |
+| `storm` | Authorized-target traffic stressor (Python), with a safe `--url-check` mode |
 | `vibe_api` | JSON endpoint stressor |
-| `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`) |
+| `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`); double-gated + rate-capped |
 
 ## 📊 Reporting & Session
 Turn findings into receipts; manage the workspace.
@@ -94,33 +99,36 @@ Turn findings into receipts; manage the workspace.
 | `lmx` | Executive security-dashboard generator (`vibe.py report`) |
 | `poc_gen` | Exploit proof-of-concept generator |
 | `backer` | Session-data backup utility |
-| `void` | Environment cleaner / anti-artifact tool (`vibe.py clean`) |
+| `seagull` | Log-noise filter — strips info chatter, keeps warnings/criticals |
+| `void` | Environment cleaner — scrubs injected test payloads from a target DB (`vibe.py clean`) |
 | `codex_boot` | Compact workspace snapshot (`vibe.py codex`) |
-| `multi` | Parallel launcher: local/private by default; `multi scan --allow-external` and `multi attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
-| `privacy_guard` | Shared tester-privacy redaction helpers (library, not a CLI tool) |
+
+## 🤖 Orchestration
+| Entry | Role |
+|------|------|
+| `vibe.py scan` | Chained deep scan (ash → vibe_headers → ghost → leep) |
+| `vibe.py attack` | Full ordered kill-chain across all phases, then the gated load phase |
+| `vibe.py multi` | Parallel launcher: local/private by default; `multi scan/attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
+| `vibe.py trust` | Manage the `authorized_targets.txt` load-test allowlist |
+| `claude.py` | Autonomous brain — Claude drives the toolset adaptively against one authorized target and writes a report |
 
 ---
 
-## 🏷️ Flagged for review
+## 🏷️ Not general web-app scanners
 
-### 🎭 Demos (illustrative payloads, not scanners)
-These demonstrate a technique rather than audit a target. Keep, but label as demos.
-- `exploit_final` — XSS payload-injector demo
-- `exploit_vault` — localStorage exfiltration demo
-
-### 📡 Off-topic — WiFi/network (not web-app pentest)
-These don't fit a web-application pentest suite. Candidates to split into a
-separate `network/` toolkit so the core roster stays focused.
+### 📡 Off-topic — WiFi/network
+Candidates to split into a separate `network/` toolkit.
 - `vibe_recon` — WiFi environment scout
 - `vox` — WiFi intruder detector
 
-### 🔧 Dev / project-specific (not general pentest tools)
-- `vibe_core` — shared base class (library, not a runnable tool)
-- `privacy_guard` — shared privacy/redaction helper (library, not a runnable tool)
+### 🔧 Libraries & dev utilities (not runnable scanners)
+- `vibe_core` — shared base class (HTTP client, logging, privacy)
+- `privacy_guard` — shared privacy/redaction helpers
 - `add_version_flags` — dev maintenance script that injects `--version` flags
 - `patch_hynest` — auth-guard injector specific to the "Hynest API" project
 
 ---
 
-_Total: 45 `.py` files in `TOOLS/` — shared libraries, pentest/audit tools,
-demos, off-topic review candidates, dev utilities, plus the Go `maelstrom` tester._
+_Web-app pentest tools + demos + reporting/session utilities in `TOOLS/`, plus
+the Go `maelstrom` load tester. The plan/subscription system has been removed —
+the only gates are the load-test allowlist and the `locked` typed-confirmation._
