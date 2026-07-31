@@ -118,7 +118,6 @@ separate `network/` toolkit so the core roster stays focused.
 - `vibe_core` — shared base class (library, not a runnable tool)
 - `privacy_guard` — shared privacy/redaction helper (library, not a runnable tool)
 - `add_version_flags` — dev maintenance script that injects `--version` flags
-- `patch_hynest` — auth-guard injector specific to the "Hynest API" project
 
 ---
 

@@ -684,7 +684,7 @@
     <div class="card">
       <div class="card-head"><div class="card-name"><span class="icon">&#x1F5D1;&#xFE0F;</span>void</div><span class="badge badge-util">DB</span></div>
       <p class="card-desc">Database cleanup tool. Removes SQLi and XSS test payloads injected during a session from the target SQLite database. Pass the <code>.db</code> path explicitly &mdash; no defaults.</p>
-      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">void.py</span><span class="flag"> --db</span> <span class="val">../Projects/WestAPI/db.sqlite</span></div>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">void.py</span><span class="flag"> --db</span> <span class="val">../Projects/YourApp/db.sqlite</span></div>
     </div>
 
     <div class="card">
@@ -702,19 +702,13 @@
     <div class="card">
       <div class="card-head"><div class="card-name"><span class="icon">&#x1F680;</span>ash</div><span class="badge badge-util">DEPLOY</span></div>
       <p class="card-desc">Deployment agent. Validates and stages project files from a source directory for deployment. Pass <code>--dir</code> to specify the project root to process.</p>
-      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ash.py</span><span class="flag"> --dir</span> <span class="val">../Projects/WestAPI</span></div>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ash.py</span><span class="flag"> --dir</span> <span class="val">../Projects/YourApp</span></div>
     </div>
 
     <div class="card">
       <div class="card-head"><div class="card-name"><span class="icon">&#x1F4F8;</span>codex_boot</div><span class="badge badge-util">SNAPSHOT</span></div>
       <p class="card-desc">Session snapshot generator. Reads <code>AGENTS.md</code> and <code>codex.md</code> to produce a structured context file for handing off or resuming a session later.</p>
       <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">codex_boot.py</span></div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><div class="card-name"><span class="icon">&#x1F527;</span>patch_hynest</div><span class="badge badge-ps">PS1 / PY</span></div>
-      <p class="card-desc">Project patcher. Applies a known fix set to a target project directory. Available as Python and PowerShell. Pass <code>--dir</code> / <code>-baseDir</code> to target.</p>
-      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">patch_hynest.py</span><span class="flag"> --dir</span> <span class="val">../Projects/WestAPI</span></div>
     </div>
 
     <div class="card">
@@ -746,9 +740,9 @@
 </main>
 
 <footer>
-  <span>VibeHacking v1.0.0</span> &nbsp;&middot;&nbsp; Built by BlackPC, Vine &amp; Foxxino Inc. &nbsp;&middot;&nbsp;
-  No harm. No foul. Just good, clean chaos. &nbsp;&middot;&nbsp;
-  <a href="https://github.com/Foxxed909/VibeHacking">github.com/Foxxed909/VibeHacking</a>
+  <span>VibeHacking v1.0.0</span> &nbsp;&middot;&nbsp;
+  A self-hosted black-box pentest toolkit &mdash; test only apps you own or are authorized to test. &nbsp;&middot;&nbsp;
+  No harm. No foul. Just good, clean chaos.
 </footer>
 
 </body>

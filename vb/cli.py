@@ -31,7 +31,6 @@ NON_RUNNABLE = {
     "vibe_core",
     "privacy_guard",
     "add_version_flags",
-    "patch_hynest",
     "run_lmx",
 }
 

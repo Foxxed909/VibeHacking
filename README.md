@@ -1,11 +1,11 @@
 # 👾 Welcome to Vibe Hacking
-### By BlackPC, Vine & Foxxino Inc.
 
-This is where we test our own apps and games by hacking them —
-because who better to break something than the people who built it?
+A self-hosted black-box pentest toolkit for testing your **own** apps and games
+by hacking them — because who better to break something than the people who
+built it?
 
-Since these are **our own projects**, we have full permission to poke,
-prod, and push them to their limits.
+Because these are **your own projects** (or targets you're explicitly authorized
+to test), you have full permission to poke, prod, and push them to their limits.
 
 **Our goals:**
 - 🔍 Test app security from the inside out
@@ -13,8 +13,7 @@ prod, and push them to their limits.
 - 🔒 Patch vulnerabilities and lock things down tight
 - ⚡ Make everything faster, smoother, and fully secure
 
-No harm. No foul. Just good, clean chaos —
-and occasionally, **BlackPC** doing it purely for the fun of it. 😄
+No harm. No foul. Just good, clean chaos — on targets that are yours to break. 😄
 
 ---
 
@@ -134,8 +133,8 @@ See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roste
 
 **The Setup looks like this:**
 ```
-<path-to-your-project>\WestAPI>       ← The App/Game being targeted
-<path-to-vibehacking>>                            ← Where we hack from
+<path-to-your-project>\YourApp>       ← The App/Game being targeted
+<path-to-vibehacking>>                ← Where we hack from
 ```
 
 **The Flow:**
@@ -237,7 +236,7 @@ Every session gets its own log file saved in the VibeHacking dir.
 Antigravity tracks everything — what was tried, what landed, what flopped.
 So nothing gets lost and you always know where you left off.
 ```
-<path-to-vibehacking>\logs\WestAPI_session_01.md
+<path-to-vibehacking>\logs\YourApp_session_01.md
 ```
 
 ---
@@ -272,7 +271,7 @@ structured report covering:
 Saved right in the logs folder. Useful for tracking progress across
 versions of the same app over time.
 ```
-<path-to-vibehacking>\reports\WestAPI_report_01.pdf
+<path-to-vibehacking>\reports\YourApp_report_01.pdf
 ```
 
 ---
