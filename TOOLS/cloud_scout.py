@@ -6,6 +6,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
 
 
+# Paths that are SUPPOSED to be publicly reachable — a 200 here is expected,
+# not a finding.
+EXPECTED_PUBLIC = (
+    "index", "home", "login", "signin", "sign-in", "register", "signup",
+    "landing", "about", "contact", "favicon", "robots", "sitemap", "/", "",
+)
+
+# Substrings that mark a path as sensitive — a 200 on one of these is worth
+# flagging because it should normally be gated or absent.
+SENSITIVE_MARKERS = (
+    "admin", "dashboard", "vault", "config", "secret", "backup", "internal",
+    "private", "debug", ".env", ".git", "db", "database", "credential", "key",
+)
+
+
+def _classify(path):
+    p = path.strip("/").lower()
+    if any(m in p for m in SENSITIVE_MARKERS):
+        return "sensitive"
+    stem = p.rsplit("/", 1)[-1].split(".")[0]
+    if stem in EXPECTED_PUBLIC or p in EXPECTED_PUBLIC:
+        return "public"
+    return "neutral"
+
+
 class CloudScout(VibeTool):
     def __init__(self):
         super().__init__("Cloud Scout", "Cloud Environment Prober")
@@ -14,29 +39,37 @@ class CloudScout(VibeTool):
         self.banner()
         self.log(f"Mapping environment at: {base_url}")
 
-        active = 0
+        exposed = 0  # sensitive paths that answered 200 — the real signal
 
         for t in targets:
             full_url = f"{base_url.rstrip('/')}/{t.lstrip('/')}"
+            kind = _classify(t)
             self.log(f"Probing: {t}")
 
             status, _, _ = self.safe_request(full_url, method='GET')
 
             if status == 200:
-                self.log(f"ACTIVE — {t} is accessible (200 OK)", "hack")
-                active += 1
+                if kind == "sensitive":
+                    self.log(f"EXPOSED — sensitive path {t} is accessible (200 OK) — verify it isn't leaking data", "hack")
+                    exposed += 1
+                elif kind == "public":
+                    self.log(f"Reachable — {t} (200) — expected-public page, not a finding", "pass")
+                else:
+                    self.log(f"Reachable — {t} (200) — map it, then judge by content", "info")
             elif status in (401, 403):
                 self.log(f"Protected — {t} requires auth ({status})", "pass")
             elif status == 404:
-                self.log(f"Not found — {t} ({status})", "warn")
+                self.log(f"Not found — {t} ({status})", "info")
             elif status == 0:
-                self.log(f"Offline or unreachable — {t}", "fail")
+                self.log(f"Offline or unreachable — {t}", "warn")
             else:
-                self.log(f"Unusual response on {t} ({status})", "warn")
+                self.log(f"Unusual response on {t} ({status})", "info")
 
         self.log("=" * 32)
-        self.log(f"Mapping complete — {active} active unprotected endpoint(s) found",
-                 "crit" if active > 0 else "pass")
+        if exposed > 0:
+            self.log(f"Mapping complete — {exposed} sensitive path(s) reachable without auth", "crit")
+        else:
+            self.log("Mapping complete — no sensitive paths exposed (public pages don't count)", "pass")
 
 
 DEFAULT_TARGETS = [
