@@ -92,13 +92,17 @@ class VibeTool:
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         safe_message = sanitize_text(message)
         formatted_msg = f"[{timestamp}] {prefix} {safe_message}"
-        print(formatted_msg)
+        # Stay quiet if stdout is closed early (e.g. piped to `head` or `grep -q`)
+        # instead of crashing the tool with a BrokenPipeError traceback.
+        try:
+            print(formatted_msg)
+            sys.stdout.flush()
+        except (BrokenPipeError, ValueError):
+            pass
 
         filename = f"{self.name.lower()}_session.log"
         with open(os.path.join(self.log_dir, filename), "a", encoding="utf-8") as f:
             f.write(formatted_msg + "\n")
-
-        sys.stdout.flush()
 
     def banner(self):
         print("================================")

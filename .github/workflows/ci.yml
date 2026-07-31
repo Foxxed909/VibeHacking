@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: Smoke tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.20"
+
+      # The toolkit is standard-library only, so there is nothing to install.
+      - name: Build the Go load tester
+        working-directory: TOOLS/maelstrom
+        run: go build ./...
+
+      - name: Run smoke tests
+        run: python tests/smoke_test.py
+
+  novachat:
+    name: Practice-target end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start NovaChat, confirm tools land real findings, stop it
+        run: |
+          set -euo pipefail
+          python testapp/app.py --port 3456 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          # wait for the target to come up
+          for i in $(seq 1 20); do
+            if curl -sf -o /dev/null http://127.0.0.1:3456/; then break; fi
+            sleep 0.5
+          done
+
+          # Capture to files first, then assert. Piping tool output straight
+          # into `grep -q` makes grep close the pipe early, which crashes the
+          # tool with BrokenPipeError and (under pipefail) fails the step.
+          python TOOLS/vibe_headers.py --url http://127.0.0.1:3456/ > headers.txt
+          python TOOLS/exploit_final.py --url http://127.0.0.1:3456/api/guestbook \
+            --field text --check-url http://127.0.0.1:3456/ > xss.txt || true
+          python TOOLS/key_stealer.py --url http://127.0.0.1:3456/ > keys.txt
+
+          grep -q "MISSING: Content-Security-Policy" headers.txt
+          grep -q "CONFIRMED XSS" xss.txt
+          grep -q "KEY CANDIDATE" keys.txt
+
+          echo "Practice-target end-to-end checks passed."
