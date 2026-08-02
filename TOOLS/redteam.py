@@ -105,10 +105,26 @@ class RedTeam(VibeTool):
             pass
         return st, body, has_jwt
 
+    def _gql_probe(self):
+        """POST an introspection query to common GraphQL paths."""
+        for gp in ("/graphql", "/api/graphql", "/query", "/v1/graphql", "/gql"):
+            try:
+                req = urllib.request.Request(self.base + gp,
+                    data=b'{"query":"{__schema{types{name}}}"}', method="POST",
+                    headers={"User-Agent": privacy_user_agent("RedTeam"),
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    body = r.read(4000).decode("utf-8", "replace")
+                if "__schema" in body or '"data"' in body or '"errors"' in body:
+                    return gp
+            except Exception:
+                continue
+        return ""
+
     def recon(self):
         self.log("=== PHASE 1: RECON ===")
         surface = {"login": "", "signup": "", "jwt": False, "get_params": {},
-                   "post_forms": [], "pages": {}}
+                   "post_forms": [], "pages": {}, "graphql": ""}
         for path in RECON_PATHS:
             st, body = self._get(path)
             if st == 0:
@@ -138,8 +154,10 @@ class RedTeam(VibeTool):
                 pr = urllib.parse.urlparse(href)
                 for k in urllib.parse.parse_qs(pr.query):
                     surface["get_params"].setdefault(pr.path or path, set()).add(k)
+        surface["graphql"] = self._gql_probe()
         self.log(f"Surface: login={surface['login'] or '-'} signup={surface['signup'] or '-'} "
-                 f"jwt={surface['jwt']} get-params={sum(len(v) for v in surface['get_params'].values())} "
+                 f"jwt={surface['jwt']} graphql={surface['graphql'] or '-'} "
+                 f"get-params={sum(len(v) for v in surface['get_params'].values())} "
                  f"post-forms={len(surface['post_forms'])}")
         return surface
 
@@ -191,18 +209,29 @@ class RedTeam(VibeTool):
         else:
             self.log("=== PHASE 3: skipped (no login surface detected) ===")
 
-        # Phase 4 — injection on discovered GET params.
+        # Phase 4 — injection on discovered GET params (SQLi + SSRF on url-like ones).
         tested = 0
+        url_like = ("url", "uri", "target", "dest", "redirect", "next", "fetch",
+                    "callback", "webhook", "image", "img", "src", "proxy", "u")
         for path, params in surface["get_params"].items():
             for param in list(params)[:2]:
-                if tested >= 3:
+                if tested >= 4:
                     break
                 url = self.base + path + "?" + urllib.parse.urlencode({param: "test"})
                 self._run_tool("blind_sqli", ["--url", url, "--param", param], "injection",
                                label=f"blind_sqli({param})")
+                if param.lower() in url_like:
+                    self._run_tool("ssrf_cloud", ["--url", url, "--param", param,
+                                                  "--self", self.base], "ssrf",
+                                   label=f"ssrf_cloud({param})")
                 tested += 1
         if not tested:
             self.log("=== PHASE 4: no GET params discovered to fuzz ===")
+
+        # Phase 4b — GraphQL, if an endpoint was found.
+        if surface["graphql"]:
+            self._run_tool("graphql_raider", ["--url", self.base + "/",
+                                              "--endpoint", surface["graphql"]], "graphql")
 
         # Phase 5 — CSRF on a discovered POST form (needs a session).
         if login and surface["post_forms"]:

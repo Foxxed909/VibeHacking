@@ -66,7 +66,21 @@ attacker does. All confirm only real, verified findings.
 | `blind_sqli` | **Boolean- and time-based blind SQLi detector.** Boolean: diffs a TRUE-condition vs a FALSE-condition response against the baseline. Time: injects DB-specific sleeps (MySQL/PostgreSQL/MSSQL/sqlite-heavy) and confirms via response stall. Catches silent injection the error/reflection tools miss. `--param`/`--method`/`--value`. |
 | `credstuff` | **Credential stuffing / brute-force auditor.** Learns the failure response, sprays a wordlist (built-in common list or `--passwords` file), and reports cracked creds, whether a lockout/rate-limit ever kicks in (or the endpoint is freely brute-forceable), and whether a valid password triggers 2FA. `--login`/`--user`/`--user-field`. |
 | `csrf_forge` | **CSRF tester + PoC generator.** Logs in, then replays a state-changing request from a simulated cross-site context (foreign Origin/Referer, no token) and weighs it against the cookie's SameSite — only calls it exploitable when the server *and* the cookie both leave the door open. Writes a ready-to-fire HTML PoC on a confirmed finding. `--endpoint`/`--data`/`--login`. |
-| `redteam` | **Autonomous chained kill-chain.** Recons the target, detects the surface (login/signup, JWT, injectable params, POST forms), then dispatches the right specialist above at each opportunity with args derived from recon — one adaptive pass, results aggregated. `--url` (+ optional `--user`/`--pass` for authed phases). |
+| `redteam` | **Autonomous chained kill-chain.** Recons the target, detects the surface (login/signup, JWT, GraphQL, URL params, POST forms), then dispatches the right specialist at each opportunity with args derived from recon — one adaptive pass, results aggregated. `--url` (+ optional `--user`/`--pass` for authed phases). |
+
+## 🧬 Modern Attack Classes — _internal edition only_
+The classes a real bounty/pentest workflow hits that the classic scanners miss.
+Each confirms with a concrete oracle (evaluated math, a stall, leaked internal
+content), not a guess.
+
+| Tool | Role |
+|------|------|
+| `graphql_raider` | **GraphQL attack suite.** Autodetects the endpoint, dumps the schema via introspection (flags sensitive fields), enumerates object-level auth (IDOR) through `user(id)`-style queries, and detects query batching (defeats rate limits, amplifies brute-force). `--endpoint`. |
+| `racer` | **Race-condition / limit-overrun tester.** Aligns N requests on a barrier so they hit together, then counts how many succeeded past a single-use limit (coupon redeem-twice, balance double-spend). More than one == non-atomic read-then-write. `--endpoint`/`--data`/`--count`/`--success`. |
+| `ssrf_cloud` | **SSRF → cloud metadata / internal.** Injects a URL-accepting param with AWS/GCP/Azure IMDS, internal ranges, `file://`/`gopher://`, and a same-host canary; confirms only when the server returns real internal/metadata content (strips reflected URLs to avoid false positives). `--param`/`--self`. |
+| `deserial` | **Insecure deserialization detector.** Sends a Python pickle whose `__reduce__` sleeps; a matching stall proves the server executes attacker pickles (RCE). Also fingerprints deserializer errors (pickle/PyYAML/Java/PHP/.NET) and probes `__proto__`/mass-assignment. `--endpoint`/`--field`. |
+| `ssti` | **Server-side template injection.** Fires arithmetic polyglots for Jinja2/Twig/Freemarker/ERB/Velocity/Handlebars/Smarty/Razor and confirms only when the server *evaluates* the expression (product present, payload not reflected verbatim). `--field`/`--param`/`--method`. |
+| `nosqli` | **NoSQL operator injection.** Sends Mongo-style operators (`$ne`/`$gt`/`$regex`/`$exists`) as a password value and confirms an auth bypass differentially against a known-bad baseline. `--user-field`/`--pass-field`/`--user`. |
 
 ## 💉 Injection & Input Attacks
 Send malformed input, watch what breaks.
