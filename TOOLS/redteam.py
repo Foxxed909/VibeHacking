@@ -83,6 +83,28 @@ class RedTeam(VibeTool):
         self.log(f"   {label}: {hacks} hack / {crits} crit", tag)
         return out
 
+    def _post_login(self, path, user, password, user_field):
+        """POST creds to a candidate login path — catches POST-only login APIs
+        (which GET recon can't see) and confirms JWT usage from the response."""
+        data = urllib.parse.urlencode({user_field: user, "password": password}).encode()
+        try:
+            op = urllib.request.build_opener(self._NoRedirect())
+            req = urllib.request.Request(self.base + path, data=data, method="POST",
+                headers={"User-Agent": privacy_user_agent("RedTeam"),
+                         "Content-Type": "application/x-www-form-urlencoded"})
+            with op.open(req, timeout=8) as r:
+                st, body, hdr = r.getcode(), r.read(20000).decode("utf-8", "replace"), r.headers
+        except urllib.error.HTTPError as e:
+            st, body, hdr = e.code, e.read(20000).decode("utf-8", "replace"), e.headers
+        except Exception:
+            return 0, "", False
+        has_jwt = bool(JWT_RE.search(body))
+        try:
+            has_jwt = has_jwt or bool(JWT_RE.search(hdr.get("Set-Cookie") or ""))
+        except Exception:
+            pass
+        return st, body, has_jwt
+
     def recon(self):
         self.log("=== PHASE 1: RECON ===")
         surface = {"login": "", "signup": "", "jwt": False, "get_params": {},
@@ -126,6 +148,24 @@ class RedTeam(VibeTool):
         self.log(f"Autonomous assault on: {self.base}")
         surface = self.recon()
         login = login_override or surface["login"]
+
+        # If creds are supplied, POST-probe candidate login paths — this reveals
+        # POST-only login APIs (invisible to GET recon) and confirms JWT usage.
+        if user and password:
+            candidates = [c for c in [login_override, login, "/api/login", "/login"] if c]
+            seen = set()
+            for lp in candidates + list(LOGIN_HINTS):
+                if lp in seen:
+                    continue
+                seen.add(lp)
+                st, _, jwt = self._post_login(lp, user, password, user_field)
+                if jwt or st in (200, 302, 303):
+                    login = login or lp
+                    if jwt:
+                        surface["jwt"] = True
+                        login = lp
+                        self.log(f"POST-login probe: {lp} returned a JWT — login={lp}, JWT auth confirmed")
+                        break
 
         # Phase 2 — always-on quick hits.
         self.log("=== PHASE 2: SURFACE AUDIT ===")
