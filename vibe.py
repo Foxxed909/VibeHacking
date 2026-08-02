@@ -187,7 +187,12 @@ def _split_total_rate(raw_rate, target_count):
 def _split_total_workers(raw_workers, target_count):
     if raw_workers in (None, ""):
         return ""
-    workers = max(1, int(raw_workers))
+    try:
+        workers = max(1, int(str(raw_workers).strip()))
+    except (TypeError, ValueError):
+        # Non-integer worker value (e.g. "50k") — pass it through untouched and
+        # let the downstream tool validate/reject it rather than crashing here.
+        return str(raw_workers)
     return str(max(1, workers // max(1, target_count)))
 
 
@@ -273,22 +278,11 @@ def _run_multi(args):
         print("[-] No targets provided. Use --target, --targets, or --targets-file.")
         return 2
 
-    # Plan-aware caps (honor-system). Dry-run is a free preview (no execution),
-    # so it keeps the global ceiling. Falls back to the global ceiling if the
-    # plans module can't be loaded for any reason.
+    # Safety ceiling on fan-out. These are fixed limits, not a paywall.
     max_targets, max_jobs = MAX_MULTI_TARGETS, MAX_MULTI_JOBS
-    if not args.dry_run:
-        try:
-            from vb import plans
-            plan_targets, plan_jobs = plans.multi_caps()
-            max_targets = min(max_targets, plan_targets)
-            max_jobs = min(max_jobs, plan_jobs)
-        except Exception:
-            pass
 
     if len(targets) > max_targets:
-        print(f"[-] Refusing {len(targets)} targets. Your plan caps multi runs at {max_targets}.")
-        print("    Raise it with a higher Vibe plan, or run `vibe unlock <code>`.")
+        print(f"[-] Refusing {len(targets)} targets. Multi runs are capped at {max_targets}.")
         return 2
 
     invalid = [url for url in targets if not _validate_http_url(url)]
@@ -314,7 +308,7 @@ def _run_multi(args):
 
     jobs = int(args.jobs or DEFAULT_MULTI_JOBS)
     if jobs < 1 or jobs > max_jobs:
-        print(f"[-] --jobs must be between 1 and {max_jobs} on your plan.")
+        print(f"[-] --jobs must be between 1 and {max_jobs}.")
         return 2
     jobs = min(jobs, len(targets))
 
@@ -829,10 +823,10 @@ def run_vibe():
                 if host not in _read_trusted():
                     print(f"[-] {host} is not trusted. Authorize it first (only if you own it):")
                     print(f"      python vibe.py trust add {host}")
-                    return
+                    return 2
                 rate = "full-send (unbounded)" if args.full_send else f"{args.entries_per_min}/min"
                 if not _external_warning(host, rate_desc=rate, assume_yes=args.yes):
-                    return
+                    return 2
         cmd = [
             "TOOLS/storm.py",
             "--duration",

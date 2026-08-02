@@ -8,6 +8,11 @@ Use this order:
 3. Scan `TOOLS/`
 4. Run `python vibe.py codex <target>` when you want a compact workspace snapshot
 
+Golden Rule:
+- Only operate against apps the user owns or is explicitly authorized to test.
+- Start black-box; reading the user's own source to confirm a finding or write a
+  fix is allowed.
+
 Output style:
 - Speak directly
 - Skip filler

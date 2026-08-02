@@ -8,7 +8,6 @@ __pycache__/
 backups/
 logs/
 vibe_session.json
-vibe_plan.json
 VIBE_DASHBOARD.html
 authorized_targets.txt
 
@@ -27,3 +26,9 @@ TOOLS/maelstrom/maelstrom.exe
 # Generated pentest reports & session artifacts
 reports/
 vb/__pycache__/
+
+# Compiled Go binary (build on demand)
+TOOLS/maelstrom/maelstrom
+
+# NovaChat runtime-generated assets
+testapp/public/

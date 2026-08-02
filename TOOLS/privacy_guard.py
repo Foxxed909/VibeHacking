@@ -12,7 +12,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]*", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
-_IPV6_RE = re.compile(r"\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]{0,4}\b", re.IGNORECASE)
+# Require at least one non-empty hextet in each leading group so ordinary text
+# with stray colons isn't redacted, while still catching real addresses and
+# "::"-compressed forms (e.g. fe80::1, 2001:db8::8a2e:370:7334).
+_IPV6_RE = re.compile(r"\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*\b", re.IGNORECASE)
 _MAC_RE = re.compile(r"\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", re.IGNORECASE)
 _WINDOWS_USER_RE = re.compile(r"C:\\Users\\[^\\\s]+", re.IGNORECASE)
 _SECRET_LINE_RE = re.compile(

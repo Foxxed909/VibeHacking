@@ -8,16 +8,29 @@ import sys, os, argparse, urllib.request, urllib.error, json, time, threading, r
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
+from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_text
 
 # ── patterns that indicate a real key leaked ──────────────────────────────────
+# Only specific, key-shaped signatures. The old generic `[A-Za-z0-9]{32,}`
+# catch-all was removed: it matched CSRF nonces, ETags, and hashes, drowning
+# real findings in false positives.
 KEY_PATTERNS = [
     r"sk-or-[A-Za-z0-9\-_]{20,}",          # OpenRouter key
-    r"sk-[A-Za-z0-9]{20,}",                 # OpenAI-style
+    r"sk-(?:proj-|svcacct-)?[A-Za-z0-9]{20,}",  # OpenAI-style
     r"Bearer [A-Za-z0-9\-_\.]{20,}",        # Bearer token
     r"Authorization[\"':\s]+[A-Za-z0-9\-_\.]{20,}",
     r"api[_\-]?key[\"':\s=]+[A-Za-z0-9\-_\.]{16,}",
-    r"[A-Za-z0-9]{32,}",                    # generic long token (loose)
+    r"AIza[0-9A-Za-z_\-]{20,}",             # Google API key
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}",           # AWS access key id
+    r"gh[pousr]_[A-Za-z0-9]{30,}",          # GitHub token
 ]
+
+
+def _privacy_headers(tool_name="Key Stealer"):
+    headers = {"Content-Type": "application/json"}
+    if privacy_enabled():
+        headers["User-Agent"] = privacy_user_agent(tool_name)
+    return headers
 
 # ── advanced prompt injection payloads specifically for key extraction ─────────
 KEY_INJECTIONS = [
@@ -154,9 +167,20 @@ ERROR_TRIGGERS = [
 
 
 class KeyStealer(VibeTool):
-    def __init__(self):
+    def __init__(self, show_keys=False):
         super().__init__("Key Stealer", "Multi-Vector API Key Extraction Suite")
         self.found_keys = []
+        # By default this auditor records evidence WITHOUT writing raw secrets to
+        # the console or session log — it honors the framework privacy guard the
+        # same way senoria does. --show-keys re-enables raw display.
+        self.show_keys = bool(show_keys)
+
+    @staticmethod
+    def _redact(secret):
+        compact = " ".join(str(secret).split())
+        if len(compact) <= 10:
+            return "<redacted>"
+        return f"{compact[:6]}...{compact[-4:]} ({len(compact)} chars)"
 
     def _check_response(self, label, resp):
         for pattern in KEY_PATTERNS:
@@ -166,7 +190,12 @@ class KeyStealer(VibeTool):
                 # filter out obvious false positives (JWTs from login page, etc.)
                 if candidate.startswith("eyJ"):
                     continue
-                self.log(f"[KEY CANDIDATE] {label} => {candidate[:80]}", "hack")
+                self.log(f"[KEY CANDIDATE] {label} => {self._redact(candidate)}", "hack")
+                if self.show_keys:
+                    # Raw reveal is opt-in and goes straight to the console, NOT
+                    # through self.log() (which the privacy guard sanitizes) and
+                    # NOT into the persisted session log. Use only on your own app.
+                    print(f"    [KEY] {label}: {candidate[:120]}", flush=True)
                 self.found_keys.append((label, candidate))
                 return True
         return False
@@ -176,8 +205,8 @@ class KeyStealer(VibeTool):
         if extra:
             body.update(extra)
         payload = json.dumps(body).encode()
-        req = urllib.request.Request(base + "/api/chat", data=payload, method="POST")
-        req.add_header("Content-Type", "application/json")
+        req = urllib.request.Request(base + "/api/chat", data=payload, method="POST",
+                                     headers=_privacy_headers())
         try:
             r = urllib.request.urlopen(req, timeout=15)
             return r.status, r.read().decode(errors="replace"), dict(r.headers)
@@ -398,9 +427,13 @@ class KeyStealer(VibeTool):
 
         self.log("================================")
         if self.found_keys:
-            self.log(f"KEY EXTRACTION COMPLETE — {len(self.found_keys)} key(s) found!", "hack")
+            self.log(f"KEY EXTRACTION COMPLETE — {len(self.found_keys)} candidate(s) found!", "hack")
             for label, key in self.found_keys:
-                self.log(f"  [{label}] => {key}", "hack")
+                self.log(f"  [{label}] => {self._redact(key)}", "hack")
+                if self.show_keys:
+                    print(f"    [KEY] {label}: {key[:120]}", flush=True)
+            if not self.show_keys:
+                self.log("Raw values redacted. Re-run with --show-keys on a target you own to reveal.", "info")
         else:
             self.log(f"No key directly extracted. Total suspicious hits: {total_hits}", "warn")
             self.log("Recommend: run env_probe.py for deeper error/stack trace analysis.")
@@ -409,5 +442,8 @@ class KeyStealer(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
+    parser.add_argument("--show-keys", action="store_true",
+                        help="Reveal raw matched secrets (use only on a target you own)")
+    parser.add_argument("-v", "--version", action="version", version="Key Stealer 1.0.0")
     args = parser.parse_args()
-    KeyStealer().run(args.url)
+    KeyStealer(show_keys=args.show_keys).run(args.url)
