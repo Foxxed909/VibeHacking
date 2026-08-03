@@ -20,7 +20,24 @@ automated tools OK (per Matthew) — but **throttle**, it's a friend's live prod
 - `.well-known/security.txt` present (RFC 9116) — mature disclosure setup.
 - `robots.txt` + `sitemap.xml` exist — **pull the sitemap in your browser and read
   every URL**; it's the black-box map of real routes.
-- **Subdomain takeover: clean** — no dangling CNAMEs on 40 common names.
+- **Subdomain takeover: clean** — no dangling CNAMEs.
+
+### Live subdomain map (DoH enumeration — 8 live hosts)
+```
+bridgemind.ai            A   (apex)
+www.bridgemind.ai        A   marketing + dashboard (canonical)
+app.bridgemind.ai        A   the application / logged-in surface
+api.bridgemind.ai        A   backend API  ← IDOR / authz / SSRF live here
+admin.bridgemind.ai      A   ADMIN surface ← high-value: test authz hard, never brute
+mcp.bridgemind.ai        A   BridgeMCP server ← agent/tool surface, prompt-injection & MCP authz
+docs.bridgemind.ai       A   documentation
+downloads.bridgemind.ai  A   BridgeSpace installers ← check integrity/signing, not just the app
+```
+All A-records behind Cloudflare (no takeover). Re-run to refresh:
+`python TOOLS/takeover.py --enum bridgemind.ai --ct`
+Two stand out: **`admin.`** (obvious authz target — confirm it rejects your normal
+account) and **`mcp.`** (the MCP endpoint — test tool-exposure + auth on the MCP
+server itself, classic agent-platform weak point).
 
 ---
 

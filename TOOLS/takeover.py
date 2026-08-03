@@ -14,8 +14,17 @@ takeover-prone service AND the live HTTP response shows that service's
 subdomain that merely uses a service and serves real content is reported as
 safe — pointing at S3 is not a bug; pointing at a *deleted* bucket is.
 
-    python TOOLS/takeover.py --host assets.your-app.example
-    python TOOLS/takeover.py --list subdomains.txt
+With --enum it first *discovers* subdomains for a domain: a built-in wordlist
+(plus your --wordlist), resolved over DoH into a live map — which hosts exist
+(A/AAAA), which are CNAMEs and to what, which are absent — optionally enriched
+from Certificate Transparency logs (--ct, best-effort). Then it runs the
+takeover check on every CNAME it found. This closes the old gap where the tool
+could only *check* names you already knew, never *find* them.
+
+    python TOOLS/takeover.py --host assets.your-app.example   # check one
+    python TOOLS/takeover.py --list subdomains.txt            # check a list
+    python TOOLS/takeover.py --enum your-app.example          # discover + map + check
+    python TOOLS/takeover.py --enum your-app.example --ct --wordlist big.txt
 """
 import argparse
 import json
@@ -67,6 +76,32 @@ SERVICES = {
 }
 
 DOH_ENDPOINTS = ("https://dns.google/resolve", "https://cloudflare-dns.com/dns-query")
+
+# Common subdomain labels for brute enumeration (DoH-resolved, no target traffic).
+SUBDOMAIN_WORDLIST = (
+    "www", "app", "api", "api2", "apis", "admin", "dashboard", "portal", "account",
+    "accounts", "auth", "login", "sso", "id", "identity", "docs", "doc", "developer",
+    "developers", "dev", "staging", "stage", "test", "testing", "qa", "uat", "sandbox",
+    "demo", "beta", "alpha", "preview", "next", "new", "old", "legacy", "blog", "news",
+    "cdn", "cdn2", "assets", "asset", "static", "media", "img", "images", "files",
+    "file", "download", "downloads", "dl", "updates", "update", "release", "releases",
+    "status", "health", "metrics", "grafana", "kibana", "prometheus", "monitor",
+    "mail", "smtp", "imap", "pop", "webmail", "email", "mx", "ns", "ns1", "ns2",
+    "vpn", "remote", "gateway", "gw", "proxy", "edge", "lb", "origin", "internal",
+    "intranet", "corp", "git", "gitlab", "github", "ci", "cd", "jenkins", "build",
+    "registry", "docker", "k8s", "kube", "cluster", "db", "database", "sql", "redis",
+    "cache", "queue", "mq", "storage", "s3", "bucket", "backup", "backups", "vault",
+    "billing", "pay", "payment", "payments", "checkout", "store", "shop", "cart",
+    "support", "help", "helpdesk", "ticket", "tickets", "chat", "community", "forum",
+    "ws", "wss", "socket", "stream", "live", "voice", "video", "call", "meet",
+    "m", "mobile", "web", "app2", "console", "manage", "control", "panel", "cpanel",
+    "webhook", "webhooks", "hooks", "callback", "events", "notify", "push",
+    "search", "analytics", "track", "tracking", "pixel", "ads", "ad", "go", "link",
+    "bridgespace", "bridgeagent", "bridgevoice", "bridgemcp", "bridgeswarm",
+    "bridgeboard", "bridgememory", "bridge", "space", "agent", "swarm", "mcp",
+)
+
+CT_ENDPOINTS = ("https://crt.sh/?q=%25.{d}&output=json",)
 
 
 class Takeover(VibeTool):
@@ -128,6 +163,86 @@ class Takeover(VibeTool):
                     return svc, target, fps
         return None, None, None
 
+    def _resolve(self, name):
+        """Classify a name via DoH: ('cname', target) | ('addr', ip) | None (absent)."""
+        cn = self._doh(name, "CNAME")
+        if cn is not None:
+            ans = [a for a in cn.get("Answer", []) if a.get("type") == 5]
+            if ans:
+                return ("cname", ans[0]["data"].rstrip("."))
+            if cn.get("Status") == 3:  # NXDOMAIN — definitively absent
+                return None
+        a = self._doh(name, "A")
+        if a is not None and a.get("Status") == 0:
+            addrs = [r["data"] for r in a.get("Answer", []) if r.get("type") == 1]
+            if addrs:
+                return ("addr", addrs[0])
+        return None
+
+    def _ct_names(self, domain):
+        """Best-effort Certificate Transparency lookup — silent if unreachable."""
+        names = set()
+        for tmpl in CT_ENDPOINTS:
+            url = tmpl.format(d=urllib.parse.quote(domain))
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": privacy_user_agent("Takeover")})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    for row in json.loads(r.read().decode("utf-8", "replace")):
+                        for field in ("common_name", "name_value"):
+                            for nm in str(row.get(field, "")).split("\n"):
+                                nm = nm.strip().lstrip("*.").lower()
+                                if nm.endswith(domain) and "@" not in nm:
+                                    names.add(nm)
+            except Exception:
+                continue
+        return names
+
+    def enumerate(self, domain, wordlist, use_ct):
+        self.banner()
+        domain = domain.strip().rstrip(".").lower()
+        candidates = {f"{w}.{domain}" for w in wordlist} | {domain}
+        ct_hits = self._ct_names(domain) if use_ct else set()
+        if use_ct:
+            self.log(f"CT logs: {len(ct_hits) or 'none reachable'} name(s) found." if ct_hits
+                     else "CT logs unreachable from here — continuing with wordlist only.")
+        candidates |= ct_hits
+        self.log(f"Resolving {len(candidates)} candidate name(s) over DoH…")
+
+        live_addr, live_cname, absent = [], [], 0
+        for name in sorted(candidates):
+            res = self._resolve(name)
+            if res is None:
+                absent += 1
+            elif res[0] == "addr":
+                live_addr.append((name, res[1]))
+            else:
+                live_cname.append((name, res[1]))
+
+        self.log("=" * 40)
+        self.log(f"LIVE SUBDOMAIN MAP for {domain} — "
+                 f"{len(live_addr) + len(live_cname)} live, {absent} absent", "hack")
+        for name, ip in live_addr:
+            self.log(f"  A     {name} -> {ip}", "info")
+        for name, tgt in live_cname:
+            self.log(f"  CNAME {name} -> {tgt}", "warn")
+
+        if live_cname:
+            self.log("-" * 40)
+            self.log(f"Running takeover check on {len(live_cname)} CNAME host(s)…")
+            for name, _ in live_cname:
+                self.check(name)
+        else:
+            self.log("No CNAME subdomains found — nothing to takeover-check.", "pass")
+
+        self.log("=" * 40)
+        if self.findings:
+            self.log(f"ENUM COMPLETE — {self.findings} takeover risk(s) across "
+                     f"{len(live_cname) + len(live_addr)} live host(s).", "hack")
+        else:
+            self.log(f"ENUM COMPLETE — {len(live_addr) + len(live_cname)} live host(s) mapped, "
+                     "no takeover risk.", "pass")
+        return 0
+
     def check(self, host):
         host = host.strip().rstrip(".")
         if not host:
@@ -177,11 +292,24 @@ class Takeover(VibeTool):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Takeover - subdomain takeover detection")
+    p = argparse.ArgumentParser(description="Takeover - subdomain enumeration + takeover detection")
     p.add_argument("--host", help="Single subdomain to check, e.g. assets.your-app.example")
     p.add_argument("--list", help="File with one subdomain per line")
-    p.add_argument("-v", "--version", action="version", version="Takeover 1.0.0")
+    p.add_argument("--enum", metavar="DOMAIN",
+                   help="Discover subdomains for a domain (DoH wordlist), map them, then takeover-check")
+    p.add_argument("--wordlist", help="Extra subdomain labels/names, one per line, added to --enum")
+    p.add_argument("--ct", action="store_true",
+                   help="Also query Certificate Transparency logs during --enum (best-effort)")
+    p.add_argument("-v", "--version", action="version", version="Takeover 2.0.0")
     args = p.parse_args(argv)
+
+    if args.enum:
+        words = list(SUBDOMAIN_WORDLIST)
+        if args.wordlist:
+            with open(args.wordlist, encoding="utf-8") as f:
+                words += [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+        return Takeover().enumerate(args.enum, words, args.ct)
+
     hosts = []
     if args.host:
         hosts.append(args.host)
@@ -189,7 +317,7 @@ def main(argv=None):
         with open(args.list, encoding="utf-8") as f:
             hosts += [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
     if not hosts:
-        p.error("provide --host or --list")
+        p.error("provide --host, --list, or --enum")
     return Takeover().run(hosts)
 
 
