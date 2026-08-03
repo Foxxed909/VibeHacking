@@ -6,12 +6,13 @@ folders — the branch you check out decides which files are on disk):
 | Branch | Edition | Tools | Use it for |
 |--------|---------|------|------------|
 | `main` | **External** — public, shareable | ~44 | showing people, the clean subset |
-| `internal` | **Full** — everything | ~57 | your actual work (all external tools **+** the arsenal) |
+| `internal` | **Full** — everything | ~61 | your actual work (all external tools **+** the arsenal) |
 
 `internal` is a **strict superset**: every external tool works there too, plus
 `redteam`, `jwt_forge`, `ssrf_cloud`, `intruder`, `blind_sqli`, `credstuff`,
-`csrf_forge`, `deserial`, `graphql_raider`, `nosqli`, `racer`, `ssti`. For
-day-to-day use, **stay on `internal`**.
+`csrf_forge`, `deserial`, `graphql_raider`, `nosqli`, `racer`, `ssti`, and the
+exotic/protocol-level set `xxe_raider`, `smuggler`, `oauth_abuse`, `takeover`.
+For day-to-day use, **stay on `internal`**.
 
 > **Requirements:** Python 3.8+ only — the toolset is standard-library, nothing to
 > `pip install`. Optional: Go 1.20+ for `maelstrom`; `pip install anthropic` for the

