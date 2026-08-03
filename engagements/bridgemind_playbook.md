@@ -65,6 +65,17 @@ python TOOLS/axios.py --url https://api.bridgemind.ai/api/projects/
 By hand: swap IDs/UUIDs in every `GET/POST/PATCH/DELETE` between the two sessions.
 Watch for: 200 instead of 403, another tenant's data in the body.
 
+### 1.5 🎯 MCP server (`mcp.bridgemind.ai`) — audit it directly
+The `mcp.` host is a Model Context Protocol server — agent tools over JSON-RPC.
+Top bugs: it answers **unauthenticated**, exposes **dangerous tools**
+(shell/file/fetch/db) to anyone, or its **CORS** lets any site drive it as you.
+```bash
+python TOOLS/mcp_probe.py --url https://mcp.bridgemind.ai/           # unauth boundary + CORS
+python TOOLS/mcp_probe.py --url https://mcp.bridgemind.ai/ --authed  # your account's tool surface
+```
+A valid `initialize`/`tools/list` with no credentials = reportable. Dangerous
+tools reachable by your normal account = worth reporting as over-exposure.
+
 ### 2. 🥈 Prompt injection / agent tool abuse — the platform's unique surface
 BridgeAgent/BridgeSwarm **execute code and call tools**. Try to make an agent:
 leak its system prompt/secrets, read files outside its project, hit an **internal

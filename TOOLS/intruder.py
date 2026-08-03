@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, AuthHandler
 from privacy_guard import privacy_user_agent
 
 SIGNUP_PATHS = ["/signup", "/register", "/api/signup", "/api/register", "/api/users", "/users/new"]
@@ -83,7 +83,7 @@ class Intruder(VibeTool):
     def _opener(self):
         cj = http.cookiejar.CookieJar()
         op = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(cj), self._NoRedirect())
+            urllib.request.HTTPCookieProcessor(cj), self._NoRedirect(), AuthHandler)
         return op, cj
 
     def _do(self, opener, path, method="GET", data=None, json_body=None):

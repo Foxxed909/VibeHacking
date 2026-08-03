@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, AuthHandler
 from privacy_guard import privacy_user_agent
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,6 +86,7 @@ class RedTeam(VibeTool):
         self.results = []
         self.ep = {}       # path -> {methods,status,ctype,fields,params,classes}
         self.graphql = ""
+        self.mcp = ""
 
     # -- HTTP ---------------------------------------------------------------
     def _req(self, path, method="GET", data=None, ctype=None):
@@ -95,7 +96,7 @@ class RedTeam(VibeTool):
             body = data if isinstance(data, bytes) else data.encode()
             h["Content-Type"] = ctype or "application/json"
         try:
-            op = urllib.request.build_opener(_NoRedirect())
+            op = urllib.request.build_opener(_NoRedirect(), AuthHandler)
             req = urllib.request.Request(self.base + path, data=body, method=method, headers=h)
             with op.open(req, timeout=7) as r:
                 return r.getcode(), r.read(60000).decode("utf-8", "replace"), r.headers
@@ -177,6 +178,13 @@ class RedTeam(VibeTool):
             if st and ("__schema" in body or '"data"' in body or '"errors"' in body):
                 self.graphql = gp
                 break
+        for mp in ("/mcp", "/api/mcp", "/mcp/v1", "/rpc", "/sse"):
+            st, body, _ = self._req(mp, "POST", '{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                                    '"params":{"protocolVersion":"2025-06-18","capabilities":{},'
+                                    '"clientInfo":{"name":"rt","version":"1"}}}')
+            if st and ("jsonrpc" in body or '"result"' in body or '"serverInfo"' in body):
+                self.mcp = mp
+                break
         for path, e in list(self.ep.items()):
             self._classify(path, e)
 
@@ -184,7 +192,8 @@ class RedTeam(VibeTool):
         def has(c): return [p for p in live if c in self.ep[p]["classes"]]
         self.log(f"{len(live)} live endpoint(s) (of {len(self.ep)} probed). "
                  f"login={has('login')} template={has('template')} deserialize={has('deserialize')} "
-                 f"fetch={has('fetch')} action={has('action')} xml={has('xml')} graphql={self.graphql or '-'}")
+                 f"fetch={has('fetch')} action={has('action')} xml={has('xml')} "
+                 f"graphql={self.graphql or '-'} mcp={self.mcp or '-'}")
 
     # -- dispatch -----------------------------------------------------------
     def _run_tool(self, tool, args, phase, label=None):
@@ -285,6 +294,8 @@ class RedTeam(VibeTool):
                            "race", label=f"racer({path})")
         if self.graphql:
             self._run_tool("graphql_raider", ["--url", self.base + "/", "--endpoint", self.graphql], "graphql")
+        if self.mcp:
+            self._run_tool("mcp_probe", ["--url", self.base + self.mcp, "--authed"], "mcp")
 
         # Phase 5 — GET-param SQLi on discovered params.
         tested = 0

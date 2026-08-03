@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, AuthHandler
 from privacy_guard import privacy_user_agent
 
 COMMON_PASSWORDS = [
@@ -59,7 +59,7 @@ class CredStuff(VibeTool):
             # success signal we want to see directly.
             class _NR(urllib.request.HTTPRedirectHandler):
                 def redirect_request(self, *a, **k): return None
-            op = urllib.request.build_opener(_NR())
+            op = urllib.request.build_opener(_NR(), AuthHandler)
             req = urllib.request.Request(self.base + login_path, data=body, method="POST", headers=headers)
             with op.open(req, timeout=8) as r:
                 return r.getcode(), r.read(20000).decode("utf-8", "replace"), r.headers, time.perf_counter() - start

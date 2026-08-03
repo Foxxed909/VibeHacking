@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, AuthHandler
 from privacy_guard import privacy_user_agent
 
 
@@ -44,7 +44,7 @@ class OAuthAbuse(VibeTool):
         self.params = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
         self.redirect = self.params.get("redirect_uri", "")
         self.findings = 0
-        self.opener = urllib.request.build_opener(_NoRedirect)
+        self.opener = urllib.request.build_opener(_NoRedirect, AuthHandler)
 
     def _request(self, params):
         url = self.base + "?" + urllib.parse.urlencode(params)

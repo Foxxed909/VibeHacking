@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, AuthHandler
 from privacy_guard import privacy_user_agent
 
 
@@ -38,7 +38,7 @@ class CSRFForge(VibeTool):
         import http.cookiejar
         cj = http.cookiejar.CookieJar()
         return urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(cj), _NoRedirect()), cj
+            urllib.request.HTTPCookieProcessor(cj), _NoRedirect(), AuthHandler), cj
 
     def _req(self, opener, path, method="GET", data=None, headers=None):
         h = {"User-Agent": privacy_user_agent("CSRF Forge"),

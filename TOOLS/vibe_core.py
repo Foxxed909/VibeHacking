@@ -117,9 +117,13 @@ class _AuthHandler(urllib.request.BaseHandler):
     https_request = http_request
 
 
+# Public alias: tools that build their own opener add this to the chain to keep
+# the session, e.g. build_opener(_NoRedirect, AuthHandler).
+AuthHandler = _AuthHandler
+
 # Install a global opener so raw urllib.request.urlopen() tools are covered too.
 # When no session is configured every hook is a no-op, so default behaviour is
-# unchanged. Tools that build their own opener should merge auth_headers().
+# unchanged. Tools that build their own opener should add AuthHandler (above).
 urllib.request.install_opener(urllib.request.build_opener(_AuthHandler))
 
 
