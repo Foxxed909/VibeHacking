@@ -131,6 +131,21 @@ Capacity and rate-limit testing. Public hosts require an exact entry in
 | `vibe_api` | JSON endpoint stressor |
 | `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`); double-gated + rate-capped |
 
+## 🔓 Authenticated Testing — _browser-assisted session_
+For targets behind Cloudflare or a login. Capture your own real session once in a
+browser, then every tool reuses it — you *are* the authorized user, not a spoof.
+See [`helpers/browser/README.md`](../helpers/browser/README.md).
+
+| Tool | Role |
+|------|------|
+| `authcheck` | **Session verifier.** Loads your session (`VIBE_AUTH_FILE`/`VIBE_COOKIE`/`VIBE_UA`/`VIBE_HEADERS` or `--cookie`/`--auth-file`), fetches a URL, and reports **CHALLENGED** (still behind anti-bot), **ANONYMOUS** (logged-out), or **AUTHENTICATED** (good to go). Run it right after capturing a session. |
+| `helpers/browser/grab_session.js` | **Session grabber** (Node/Playwright, runs on *your* machine). Opens a real Chromium; you solve the challenge + log in; it exports cookies + UA to `session_auth.json`. Not a stdlib tool — an optional browser helper. |
+
+> Once a session is set, **all** tools that use the shared HTTP client (and any
+> `urllib.urlopen` tool) carry your cookies + matching User-Agent automatically —
+> no per-tool flag needed. `cf_clearance` is UA-bound, so the toolkit sends the
+> browser's UA to match. `session_auth.json` is a live login: it's git-ignored.
+
 ## 📊 Reporting & Session
 Turn findings into receipts; manage the workspace.
 

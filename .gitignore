@@ -11,6 +11,12 @@ vibe_session.json
 VIBE_DASHBOARD.html
 authorized_targets.txt
 
+# Browser-assisted session captures — these ARE live sessions (secrets)
+session_auth.json
+*session_auth*.json
+*.session.json
+helpers/browser/node_modules/
+
 # Tooling / transient
 .playwright-mcp/
 .DS_Store

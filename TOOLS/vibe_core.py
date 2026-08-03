@@ -26,6 +26,103 @@ def _read_version():
 FRAMEWORK_VERSION = _read_version()
 
 
+# ---------------------------------------------------------------------------
+# Authenticated-session context (browser-assisted testing)
+#
+# For targets behind a JS/anti-bot wall (Cloudflare) or that require a login,
+# you solve the challenge / log in ONCE in a real browser on your own machine,
+# export the session, and every tool then reuses it — you ARE the verified,
+# authorized user the program invited, not a spoofed one. Nothing here fakes a
+# fingerprint or evades detection; it carries your own real cookies + UA.
+#
+# Sources, in priority order (read live on each request, so a flag set at
+# startup or an env var both work):
+#   - env VIBE_COOKIE   : raw Cookie header, e.g. "cf_clearance=..; session=.."
+#   - env VIBE_UA       : User-Agent to match the session (cf_clearance is UA-bound)
+#   - env VIBE_HEADERS  : extra headers as JSON, e.g. '{"Authorization":"Bearer .."}'
+#   - env VIBE_AUTH_FILE: path to JSON {cookie|cookies, user_agent, headers}
+#                         (the browser helper writes this file)
+# ---------------------------------------------------------------------------
+def _cookies_to_header(cookies):
+    if isinstance(cookies, str):
+        return cookies
+    if isinstance(cookies, (list, tuple)):
+        parts = [f"{c.get('name')}={c.get('value')}" for c in cookies
+                 if isinstance(c, dict) and c.get("name")]
+        return "; ".join(parts)
+    return ""
+
+
+def auth_context():
+    """Return (cookie, user_agent, extra_headers) from env/file, read fresh."""
+    ctx = {}
+    path = os.environ.get("VIBE_AUTH_FILE")
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                ctx = json.load(f)
+        except (OSError, ValueError):
+            ctx = {}
+    cookie = (os.environ.get("VIBE_COOKIE")
+              or ctx.get("cookie")
+              or _cookies_to_header(ctx.get("cookies")))
+    ua = os.environ.get("VIBE_UA") or ctx.get("user_agent") or ""
+    extra = dict(ctx.get("headers") or {})
+    env_hdr = os.environ.get("VIBE_HEADERS")
+    if env_hdr:
+        try:
+            extra.update(json.loads(env_hdr))
+        except ValueError:
+            pass
+    return cookie, ua, extra
+
+
+def auth_headers():
+    """Auth as a header dict, for tools that build their own opener/request."""
+    cookie, ua, extra = auth_context()
+    headers = dict(extra)
+    if cookie:
+        headers["Cookie"] = cookie
+    if ua:
+        headers["User-Agent"] = ua
+    return headers
+
+
+def auth_active():
+    cookie, ua, extra = auth_context()
+    return bool(cookie or extra)
+
+
+class _AuthHandler(urllib.request.BaseHandler):
+    """Inject the browser session into every urlopen() request, live."""
+    handler_order = 900
+
+    def _apply(self, req):
+        cookie, ua, extra = auth_context()
+        if cookie and not req.has_header("Cookie"):
+            req.add_unredirected_header("Cookie", cookie)
+        if ua:
+            try:
+                req.remove_header("User-agent")
+            except (AttributeError, KeyError):
+                pass
+            req.add_unredirected_header("User-agent", ua)
+        for key, value in extra.items():
+            req.add_unredirected_header(key.capitalize() if key.islower() else key, value)
+        return req
+
+    def http_request(self, req):
+        return self._apply(req)
+
+    https_request = http_request
+
+
+# Install a global opener so raw urllib.request.urlopen() tools are covered too.
+# When no session is configured every hook is a no-op, so default behaviour is
+# unchanged. Tools that build their own opener should merge auth_headers().
+urllib.request.install_opener(urllib.request.build_opener(_AuthHandler))
+
+
 class _CaseInsensitiveHeaders(dict):
     """HTTP response headers whose lookups ignore case.
 
@@ -137,6 +234,17 @@ class VibeTool:
         else:
             headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+
+        # Browser-assisted session: carry your own real cookies, and match the
+        # UA the cf_clearance cookie was issued to (it is UA-bound), so the
+        # request is recognised as your verified browser rather than a scanner.
+        _cookie, _ua, _extra = auth_context()
+        if _cookie:
+            headers.setdefault('Cookie', _cookie)
+        if _ua:
+            headers['User-Agent'] = _ua
+        for _k, _v in _extra.items():
+            headers.setdefault(_k, _v)
 
         try:
             body = json.dumps(data).encode('utf-8') if data else None

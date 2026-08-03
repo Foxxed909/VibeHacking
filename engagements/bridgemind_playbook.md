@@ -10,8 +10,17 @@ automated tools OK (per Matthew) — but **throttle**, it's a friend's live prod
 > ⚠️ **Run this from YOUR machine, not a datacenter/proxy IP.** Cloudflare throws a
 > managed challenge at non-browser/datacenter IPs (confirmed: every app host 403s
 > from a proxy). From your real IP + logged-in browser session you pass the
-> challenge; the tools then see the real app. For authenticated tests, grab your
-> session cookie from DevTools and pass it where the tool supports `--cookie`/headers.
+> challenge; the tools then see the real app.
+>
+> **Browser-assisted session (does both the Cloudflare pass AND login):**
+> ```bash
+> cd helpers/browser && npm install playwright && npx playwright install chromium
+> node grab_session.js https://www.bridgemind.ai/ ../../session_auth.json   # solve CF + log in, press ENTER
+> export VIBE_AUTH_FILE="$PWD/../../session_auth.json"
+> python TOOLS/authcheck.py --url https://app.bridgemind.ai/dashboard        # expect AUTHENTICATED
+> ```
+> Every tool then reuses your verified session automatically — no per-tool flag.
+> See `helpers/browser/README.md`. (No Node? `export VIBE_COOKIE="…"` + `VIBE_UA="…"` from DevTools.)
 
 ---
 
