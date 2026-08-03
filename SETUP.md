@@ -100,8 +100,8 @@ python TOOLS/vibe_headers.py --url http://127.0.0.1:3456/
 python TOOLS/redteam.py --url http://127.0.0.1:8800/ --user demo --pass demo1234
 ```
 
-Sanity check after any update: `python tests/smoke_test.py` → `132/132` on the
-full edition (`120/120` on the public one).
+Sanity check after any update: `python tests/smoke_test.py` → `140/140` on the
+full edition (fewer checks on the public edition, all passing).
 
 > **Golden rule, always:** only test an app you own or are explicitly authorized
 > to test — recon included.
