@@ -38,3 +38,6 @@ TOOLS/maelstrom/maelstrom
 
 # NovaChat runtime-generated assets
 testapp/public/
+
+# Engagement tool output (may contain live responses)
+engagements/output/

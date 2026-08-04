@@ -30,10 +30,25 @@ invented findings — a false report wastes Matthew's time and burns trust.
 
 | # | Severity | Title | Status |
 |---|----------|-------|--------|
-| 1 | 🔵 Info | DMARC policy is `quarantine`, not `reject` | Hardening suggestion |
-| 2 | 🔵 Info | MCP endpoint error discloses the auth mechanism | Likely accepted-risk |
+| 1 | 🟢 Low | MTA-STS policy is in `testing` mode, not `enforce` | Real, reportable |
+| 2 | 🔵 Info | DMARC policy is `quarantine`, not `reject` | Hardening suggestion |
+| 3 | 🔵 Info | MCP endpoint error discloses the auth mechanism | Likely accepted-risk |
 
-### 1. 🔵 Info — DMARC set to `p=quarantine` rather than `p=reject`
+### 1. 🟢 Low — MTA-STS published in `testing` mode
+`https://www.bridgemind.ai/.well-known/mta-sts.txt`:
+```
+version: STSv1
+mode: testing
+mx: bridgemind-ai.mail.protection.outlook.com
+max_age: 86400
+```
+**Impact:** In `testing` mode the sender does **not** enforce TLS or MX matching —
+it only reports. A network attacker able to MITM inbound SMTP can strip TLS or
+redirect mail without the policy blocking it. Low severity (requires network
+position), but a legitimate, commonly-accepted email-security finding.
+**Fix:** after confirming reports look clean, set `mode: enforce`.
+
+### 2. 🔵 Info — DMARC set to `p=quarantine` rather than `p=reject`
 `_dmarc.bridgemind.ai` publishes:
 ```
 v=DMARC1; p=quarantine; rua=mailto:dmarc@bridgemind.ai;
@@ -46,7 +61,7 @@ subdomain policy or `pct=`.
 **Fix:** after reviewing `rua` reports, move to `p=reject; sp=reject;`.
 **Note:** this is a common accepted-risk item; many programs treat it as info.
 
-### 2. 🔵 Info — MCP endpoint discloses its auth scheme in the error
+### 3. 🔵 Info — MCP endpoint discloses its auth scheme in the error
 `POST https://mcp.bridgemind.ai/mcp` (unauthenticated) returns:
 ```json
 {"jsonrpc":"2.0","error":{"code":-32001,
@@ -63,13 +78,20 @@ not worth submitting.
 These are worth telling Matthew — his external posture is genuinely solid:
 
 - **Cloudflare WAF** fronts every app host; datacenter/bot traffic is challenged.
-- **MCP server (`mcp.bridgemind.ai/mcp`) is properly auth-gated** — rejects no
-  token, empty, bogus, `null`, and `undefined` identically (fails closed, no
-  token-format oracle). CORS does **not** reflect arbitrary origins. Ships
-  `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload` and
-  `X-Content-Type-Options: nosniff`.
-- **No subdomain takeover** — 8 live subdomains enumerated (`www app api docs
-  admin mcp downloads` + apex), all on A-records, zero dangling CNAMEs.
+- **MCP server (`mcp.bridgemind.ai/mcp`) is properly auth-gated** — auth is
+  enforced *before* method dispatch: **25 JSON-RPC methods** tried (initialize,
+  tools/call, resources/read, logging/setLevel, sampling/createMessage, …) plus
+  batch, notification, and alternate-header shapes ALL returned the identical
+  `-32001 API key required` — no per-method bypass. Rejects no/empty/bogus/`null`/
+  `undefined` tokens identically (fails closed, no oracle). CORS does not reflect
+  arbitrary origins. Ships HSTS `includeSubDomains; preload` + `nosniff`.
+- **`downloads.bridgemind.ai` is a locked S3+CloudFront bucket** — returns
+  `AccessDenied`; bucket listing (`?list-type=2`) denied. No object enumeration.
+- **No origin-IP leak** — all 8 hosts resolve to the same Cloudflare IPs
+  (104.26.2.38 / 104.26.3.38 / 172.67.74.236); no direct-hittable origin to
+  bypass the WAF.
+- **No subdomain takeover** — 8 live subdomains enumerated (`www api app admin
+  mcp docs downloads` + apex), all on A-records, zero dangling CNAMEs.
 - **Email:** SPF `-all` hard-fail + DMARC with aggregate reporting.
 - **`.well-known/security.txt`** present (RFC 9116) with contact + policy — mature
   disclosure setup.
