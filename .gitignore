@@ -28,13 +28,17 @@ Thumbs.db
 
 # Compiled Go binary — build on demand with `go build` in TOOLS/maelstrom/
 TOOLS/maelstrom/maelstrom.exe
+TOOLS/maelstrom/maelstrom
+TOOLS/maelstrom/browser_after_maelstrom.png
+TOOLS/maelstrom/maelstrom_latest.md
 
 # Generated pentest reports & session artifacts
 reports/
 vb/__pycache__/
 
-# Compiled Go binary (build on demand)
-TOOLS/maelstrom/maelstrom
+# Local engagement screenshots (do not commit)
+chatgpt_*.png
+*.session.png
 
 # NovaChat runtime-generated assets
 testapp/public/
