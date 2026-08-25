@@ -14,10 +14,12 @@ LOG_DIR = os.path.join(ROOT, "logs")
 
 VIBE_COMMANDS = {
     "scan",
+    "attack",
     "report",
     "privacy",
     "clean",
     "noloader",
+    "senoria",
     "storm",
     "maelstrom",
     "multi",
@@ -30,13 +32,12 @@ VIBE_COMMANDS = {
 NON_RUNNABLE = {
     "vibe_core",
     "privacy_guard",
-    "add_version_flags",
-    "patch_hynest",
     "run_lmx",
 }
 
 MENU_ITEMS = [
     ("Deep scan", "scan"),
+    ("Full attack chain", "attack"),
     ("NoLoader availability window", "noloader"),
     ("Ash domain recon", "ash"),
     ("Spider attack-surface crawl", "spider"),
@@ -181,6 +182,7 @@ def _print_help():
             Examples:
               vibe / 
               vibe scan http://127.0.0.1:5500/
+              vibe attack http://127.0.0.1:5500/ --skip-load --json
               vibe noloader -urlx https://example.com t-60 -f 3
               vibe ash --url https://example.com
               vibe multi scan --targets http://127.0.0.1:3000 http://127.0.0.1:4000 --jobs 2
@@ -295,6 +297,11 @@ def _interactive():
     if action == "scan":
         url = _prompt("Target URL")
         return _route_vibe(["scan", url]) if url else 2
+    if action == "attack":
+        url = _prompt("Target URL")
+        if not url:
+            return 2
+        return _route_vibe(["attack", url, "--skip-load", "--json"])
     if action == "noloader":
         url = _prompt("Target URL")
         seconds = _prompt("Seconds", "60")
