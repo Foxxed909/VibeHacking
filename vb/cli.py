@@ -33,6 +33,8 @@ NON_RUNNABLE = {
     "vibe_core",
     "privacy_guard",
     "run_lmx",
+    "findings",
+    "attack_run",
 }
 
 MENU_ITEMS = [
@@ -145,10 +147,18 @@ def _route_vibe(args):
     return _run([sys.executable, os.path.join(ROOT, "vibe.py"), *args])
 
 
+def _route_attack(args):
+    """Full internal attack chain: authcheck + phases + redteam + findings JSON."""
+    return _run([sys.executable, os.path.join(ROOT, "run_attack_cli.py"), *args])
+
+
 def _run_tool(tool, args):
     help_only = any(arg in {"-h", "--help", "-v", "--version"} for arg in args)
     if tool in _locked_tools() and not help_only and not _confirm_locked(tool):
         return 2
+
+    if tool == "attack":
+        return _route_attack(args)
 
     if tool in VIBE_COMMANDS:
         return _route_vibe([tool, *args])
@@ -182,7 +192,8 @@ def _print_help():
             Examples:
               vibe / 
               vibe scan http://127.0.0.1:5500/
-              vibe attack http://127.0.0.1:5500/ --skip-load --json
+              vibe attack http://127.0.0.1:5500/ --skip-load
+              vibe attack http://127.0.0.1:5500/ --skip-load --user demo --pass demo1234
               vibe noloader -urlx https://example.com t-60 -f 3
               vibe ash --url https://example.com
               vibe multi scan --targets http://127.0.0.1:3000 http://127.0.0.1:4000 --jobs 2
@@ -301,7 +312,7 @@ def _interactive():
         url = _prompt("Target URL")
         if not url:
             return 2
-        return _route_vibe(["attack", url, "--skip-load", "--json"])
+        return _route_attack([url, "--skip-load"])
     if action == "noloader":
         url = _prompt("Target URL")
         seconds = _prompt("Seconds", "60")
