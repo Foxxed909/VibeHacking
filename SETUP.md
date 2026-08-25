@@ -61,11 +61,11 @@ If you'd rather have both editions open in separate folders simultaneously
 directory:
 
 ```bash
-# macOS / Linux
-bash setup-editions.sh
+# macOS / Linux (scripts live under scripts/)
+bash scripts/setup-editions.sh
 
 # Windows PowerShell
-.\setup-editions.ps1
+.\scripts\setup-editions.ps1
 ```
 
 You'll get:
@@ -81,8 +81,6 @@ Update either later:
 git -C internal pull      # full edition
 git -C external pull      # public edition
 ```
-
-*(The scripts live in `scripts/`; run them from where you want the folders.)*
 
 ---
 
@@ -100,8 +98,9 @@ python TOOLS/vibe_headers.py --url http://127.0.0.1:3456/
 python TOOLS/redteam.py --url http://127.0.0.1:8800/ --user demo --pass demo1234
 ```
 
-Sanity check after any update: `python tests/smoke_test.py` → `140/140` on the
-full edition (fewer checks on the public edition, all passing).
+Sanity check after any update: `python tests/smoke_test.py` — it reports
+`N/N checks passed` dynamically (compile + CLI wiring + tool `--help` sweep).
+On a healthy full edition every check should pass.
 
 > **Golden rule, always:** only test an app you own or are explicitly authorized
 > to test — recon included.
