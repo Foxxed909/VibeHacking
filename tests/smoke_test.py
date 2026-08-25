@@ -32,13 +32,10 @@ PY = sys.executable
 #   - vibe_core: shared base library, no CLI
 #   - privacy_guard: shared privacy/redaction helpers, no CLI
 #   - lmx: report generator with no argparse (would run, not print help)
-#   - add_version_flags / patch_hynest: dev/project utilities that rewrite files
 SKIP_RUNTIME = {
     "vibe_core.py",
     "privacy_guard.py",
     "lmx.py",
-    "add_version_flags.py",
-    "patch_hynest.py",
 }
 
 
