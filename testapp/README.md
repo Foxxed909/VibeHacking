@@ -1,9 +1,14 @@
-# 🎯 NovaChat — the practice target
+# 🎯 NovaChat — deliberately vulnerable practice target
 
 A small, **deliberately vulnerable** AI-assistant web app so VibeHacking has
 something real to break. Every vulnerability is genuine and actually
 exploitable — nothing here is faked, scripted, or a canned "you got hacked"
 message. Point the tools at it and you land real findings.
+
+| Target | Purpose |
+|--------|---------|
+| **`testapp/`** (this folder) | Deliberately vulnerable practice target ("everything3" role) |
+| **`everything2/`** | Hardened full app — **not** deliberately vulnerable |
 
 Stdlib only. No `pip install`. **Do not deploy this anywhere reachable from the
 internet** — it exists to be broken on your own machine (Golden Rule #1).
@@ -51,3 +56,5 @@ python TOOLS/exploit_final.py --url http://127.0.0.1:3456/api/guestbook --field 
 python TOOLS/key_stealer.py --url http://127.0.0.1:3456/          # redacted
 python TOOLS/key_stealer.py --url http://127.0.0.1:3456/ --show-keys   # raw (your own app)
 ```
+
+For a **hardened** twin of this surface, see `everything2/`.
