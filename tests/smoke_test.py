@@ -32,10 +32,13 @@ PY = sys.executable
 #   - vibe_core: shared base library, no CLI
 #   - privacy_guard: shared privacy/redaction helpers, no CLI
 #   - lmx: report generator with no argparse (would run, not print help)
+#   - findings / attack_run: library helpers used by the attack orchestrator
 SKIP_RUNTIME = {
     "vibe_core.py",
     "privacy_guard.py",
     "lmx.py",
+    "findings.py",
+    "attack_run.py",
 }
 
 
@@ -130,7 +133,7 @@ def main():
         failures.append(f"case-insensitive header check errored: {e}")
 
     # 2. Compile-check every Python file -----------------------------------
-    py_files = [os.path.join(ROOT, "vibe.py")]
+    py_files = [os.path.join(ROOT, "vibe.py"), os.path.join(ROOT, "run_attack_cli.py")]
     py_files += [
         os.path.join(TOOLS, f) for f in os.listdir(TOOLS) if f.endswith(".py")
     ]
@@ -142,6 +145,8 @@ def main():
             ]
     compiled_ok = 0
     for path in sorted(py_files):
+        if not os.path.isfile(path):
+            continue
         checks += 1
         try:
             py_compile.compile(path, doraise=True)
@@ -149,7 +154,7 @@ def main():
         except py_compile.PyCompileError as e:
             rel = os.path.relpath(path, ROOT)
             failures.append(f"compile failed: {rel}: {str(e).splitlines()[0][:160]}")
-    print(f"[PASS] compile-check: {compiled_ok}/{len(py_files)} files OK")
+    print(f"[PASS] compile-check: {compiled_ok}/{len([p for p in py_files if os.path.isfile(p)])} files OK")
 
     # 3. Orchestrator ------------------------------------------------------
     for sub in (["vibe.py", "--help"], ["vibe.py", "list"]):
@@ -160,6 +165,13 @@ def main():
             failures.append(f"`{label}` exited {code}: {err.strip()[:200]}")
         else:
             print(f"[PASS] {label}")
+
+    checks += 1
+    code, err = run(["run_attack_cli.py", "--help"])
+    if code != 0:
+        failures.append(f"`run_attack_cli.py --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] run_attack_cli.py --help")
 
     checks += 1
     code, err = run(["vibe.py", "--noloader", "--help"])
