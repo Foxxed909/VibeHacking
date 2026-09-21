@@ -10,7 +10,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from privacy_guard import privacy_user_agent, sanitize_data
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 MIN_INTERVAL = 0.5
@@ -24,7 +24,12 @@ def _parse_seconds(raw):
         raise ValueError("empty duration")
 
     multiplier = 1.0
-    for suffix, scale in (("seconds", 1), ("second", 1), ("secs", 1), ("sec", 1), ("s", 1), ("m", 60), ("h", 3600)):
+    # Longest-finishing suffixes first so "2m" isn't parsed as "2min"; every
+    # unit the argparse help advertises (s/m/min/hour) must round-trip.
+    for suffix, scale in (("seconds", 1), ("second", 1), ("secs", 1), ("sec", 1),
+                          ("minutes", 60), ("minute", 60), ("mins", 60), ("min", 60),
+                          ("hours", 3600), ("hour", 3600), ("hrs", 3600), ("hr", 3600),
+                          ("m", 60), ("h", 3600), ("s", 1)):
         if value.endswith(suffix):
             multiplier = scale
             value = value[: -len(suffix)]
@@ -328,7 +333,8 @@ def _parse_args(argv):
     )
     parser.add_argument("tokens", nargs="*", help="Optional URL and shorthand duration tokens such as t-60")
     parser.add_argument("--url", "--urlx", "-urlx", dest="url", default="", help="Target URL")
-    parser.add_argument("-t", "--time", "--seconds", dest="duration", default="30s", help="Observation window, e.g. 60, 60s, 2m")
+    parser.add_argument("-t", "--time", "--seconds", dest="duration", default="30s",
+                        help="Observation window, e.g. 60, 60s, 2m, 5min, 1h")
     parser.add_argument("-f", "--force", type=int, default=1, help="Consecutive expected-state probes required")
     parser.add_argument("-fx", "--fx", "--force-x", dest="force_x", type=int, default=0, help="Extra serial confirmation probes")
     parser.add_argument("--interval", type=float, default=2.0, help="Seconds between serial probes (min 0.5)")
@@ -347,7 +353,7 @@ def _parse_args(argv):
     parser.add_argument("--expect-text", default="", help="Substring that must appear in the body for a probe to count as healthy (e.g. 'ok' or 'healthy')")
     parser.add_argument("--auto-scheme", action="store_true", help="Prefix https:// when the URL has no scheme")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable summary")
-    parser.add_argument("-v", "--version", action="version", version="NoLoader 1.0.0")
+    parser.add_argument("-v", "--version", action="version", version=f"NoLoader {FRAMEWORK_VERSION}")
     args = parser.parse_args(argv)
 
     duration = _parse_seconds(args.duration)

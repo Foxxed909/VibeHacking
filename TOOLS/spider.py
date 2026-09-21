@@ -5,7 +5,7 @@ import re
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class Spider(VibeTool):
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Spider - Attack Surface Crawler")
     parser.add_argument("--url", required=True, help="Starting URL (e.g. http://localhost:3456)")
     parser.add_argument("--depth", type=int, default=2, help="Crawl depth (default: 2)")
-    parser.add_argument('-v', '--version', action='version', version='Spider 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Spider {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Spider().run(args.url, args.depth)

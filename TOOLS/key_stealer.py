@@ -4,11 +4,11 @@ Attacks: LLM prompt injection (direct / indirect / multi-turn / oracle),
          error-based leakage, X-OR-Key reflection, computer-use SSRF,
          response header / config leak.
 """
-import sys, os, argparse, urllib.request, urllib.error, json, time, threading, re
+import sys, os, argparse, urllib.request, urllib.error, json, re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
-from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_text
+from vibe_core import VibeTool, FRAMEWORK_VERSION
+from privacy_guard import privacy_enabled, privacy_user_agent
 
 # ── patterns that indicate a real key leaked ──────────────────────────────────
 # Only specific, key-shaped signatures. The old generic `[A-Za-z0-9]{32,}`
@@ -444,6 +444,6 @@ if __name__ == "__main__":
     parser.add_argument("--url", required=True)
     parser.add_argument("--show-keys", action="store_true",
                         help="Reveal raw matched secrets (use only on a target you own)")
-    parser.add_argument("-v", "--version", action="version", version="Key Stealer 1.0.0")
+    parser.add_argument("-v", "--version", action="version", version=f"Key Stealer {FRAMEWORK_VERSION}")
     args = parser.parse_args()
     KeyStealer(show_keys=args.show_keys).run(args.url)

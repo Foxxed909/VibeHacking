@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 
@@ -15,16 +15,28 @@ class Phantom(VibeTool):
     def __init__(self):
         super().__init__("Phantom", "Cookie & Session Token Analyzer")
 
+    @staticmethod
+    def _b64_json(segment):
+        padding = 4 - len(segment) % 4
+        return json.loads(base64.urlsafe_b64decode(segment + '=' * padding))
+
     def _decode_jwt(self, token):
+        """Return the JWT payload, or None when the value is not a JWT."""
+        return self._decode_jwt_parts(token)[1]
+
+    def _decode_jwt_parts(self, token):
+        """Return (header, payload) for a JWT, or (None, None).
+
+        `alg` lives in the header, not the payload — reading it from the payload
+        made the alg:none check unreachable.
+        """
         try:
             parts = token.split('.')
             if len(parts) != 3:
-                return None
-            padding = 4 - len(parts[1]) % 4
-            payload = base64.urlsafe_b64decode(parts[1] + '=' * padding)
-            return json.loads(payload)
+                return None, None
+            return self._b64_json(parts[0]), self._b64_json(parts[1])
         except Exception:
-            return None
+            return None, None
 
     def _analyze_cookie(self, raw):
         parts = [p.strip() for p in raw.split(';')]
@@ -46,13 +58,17 @@ class Phantom(VibeTool):
         elif 'samesite=none' in samesite:
             issues.append(("SameSite=None — cross-site requests include this cookie", "warn"))
 
-        jwt_payload = self._decode_jwt(value)
+        jwt_header, jwt_payload = self._decode_jwt_parts(value)
         if jwt_payload:
             issues.append((f"JWT detected — payload: {str(jwt_payload)[:120]}", "hack"))
             if 'exp' not in jwt_payload:
                 issues.append(("JWT has no expiry (exp claim missing) — token lives forever", "crit"))
-            if jwt_payload.get('alg', '').lower() == 'none':
+            alg = str((jwt_header or {}).get('alg', '')).lower()
+            if alg == 'none':
                 issues.append(("JWT uses alg:none — CRITICAL auth bypass possible", "crit"))
+            elif alg in ('hs256', 'hs384', 'hs512'):
+                issues.append((f"JWT is signed with a symmetric algorithm ({alg.upper()}); "
+                               f"verify the secret is not guessable", "warn"))
 
         if len(value) > 0 and len(value) < 16:
             issues.append((f"Cookie value is suspiciously short ({len(value)} chars) — may be predictable", "warn"))
@@ -94,7 +110,7 @@ class Phantom(VibeTool):
             name, issues = self._analyze_cookie(raw)
             self.log(f"Cookie: {name}", "info")
             if not issues:
-                self.log(f"  All flags set correctly", "pass")
+                self.log("  All flags set correctly", "pass")
             for msg, level in issues:
                 self.log(f"  {msg}", level)
                 total_issues += 1
@@ -109,7 +125,7 @@ class Phantom(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phantom - Cookie & Session Token Analyzer")
     parser.add_argument("--url", required=True, help="Target URL (e.g. http://localhost:3456/api/login)")
-    parser.add_argument('-v', '--version', action='version', version='Phantom 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Phantom {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Phantom().run(args.url)

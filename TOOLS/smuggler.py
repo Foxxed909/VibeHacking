@@ -27,7 +27,7 @@ import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 # Transfer-Encoding header obfuscations that front-ends commonly fail to parse
 # the same way the back-end does. The value is the raw header line bytes.
@@ -148,7 +148,7 @@ def main(argv=None):
     p.add_argument("--url", required=True, help="Target base URL (front-end / proxy)")
     p.add_argument("--threshold", type=float, default=5.0,
                    help="Absolute delay floor in seconds to call a hang (default 5)")
-    p.add_argument("-v", "--version", action="version", version="Smuggler 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Smuggler {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return Smuggler(args.url, args.threshold).run()
 

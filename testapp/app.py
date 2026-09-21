@@ -33,10 +33,8 @@ import argparse
 import base64
 import hashlib
 import hmac
-import html
 import json
 import os
-import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs

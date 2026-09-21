@@ -6,7 +6,12 @@
 # trivial to run on any clean Python install.
 #
 # Requirements:
-#   - Python 3.8+        (tested on 3.14; uses f-strings + sys.stdout.reconfigure)
+#   - Python 3.9+        (CI runs 3.9 and 3.12; tested up to 3.14.)
+#                        The tools only use the standard library.
+#
+# Optional (one pip package, only for the optional autonomous brain):
+#   - anthropic          `pip install anthropic` — needed ONLY by claude.py, the
+#                        Claude-driven agent. Every other tool stays stdlib-only.
 #
 # Optional / external (not pip-installable):
 #   - Go 1.20+           only needed for `vibe.py maelstrom` (the Go load tester)

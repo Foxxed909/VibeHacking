@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, AuthHandler
+from vibe_core import VibeTool, FRAMEWORK_VERSION, AuthHandler
 from privacy_guard import privacy_user_agent
 
 COMMON_PASSWORDS = [
@@ -159,7 +159,7 @@ def main(argv=None):
     p.add_argument("--pass-field", default="password", help="Password field name")
     p.add_argument("--data", default="", help="Extra fixed fields, e.g. 'csrf=abc'")
     p.add_argument("--delay", type=float, default=0.0, help="Seconds between attempts")
-    p.add_argument("-v", "--version", action="version", version="CredStuff 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"CredStuff {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
 
     users = _load_list(args.users, None) or ([args.user] if args.user else ["admin"])

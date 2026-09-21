@@ -4,7 +4,7 @@ import argparse
 import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -61,7 +61,7 @@ if __name__ == "__main__":
     parser.add_argument("--type", choices=["xss", "csrf"], default="xss", help="PoC type to generate")
     parser.add_argument("--url", required=True, help="Vulnerable endpoint (e.g. http://localhost:3456/search)")
     parser.add_argument("--out", default=os.path.join(_root, "logs"), help="Output directory for PoC file")
-    parser.add_argument('-v', '--version', action='version', version='PoC Gen 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"PoC Gen {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     PocGen().run(args.type, args.url, args.out)

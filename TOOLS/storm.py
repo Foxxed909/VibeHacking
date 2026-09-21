@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent, sanitize_text
 
 
@@ -399,7 +399,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip the interactive external-target confirmation (for scripted runs you trust).",
     )
-    parser.add_argument("-v", "--version", action="version", version="Storm 1.0.0")
+    parser.add_argument("-v", "--version", action="version", version=f"Storm {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     if args.url_check or args.urls_file:

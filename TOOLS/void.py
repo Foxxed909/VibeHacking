@@ -4,7 +4,7 @@ import sqlite3
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class Void(VibeTool):
@@ -48,7 +48,7 @@ class Void(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Void - Anti-Artifact Environment Cleaner")
     parser.add_argument("--db", required=True, help="Path to target app database (e.g. ../Projects/MyApp/db.sqlite)")
-    parser.add_argument('-v', '--version', action='version', version='Void 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Void {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Void().run(args.db)

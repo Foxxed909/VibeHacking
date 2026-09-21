@@ -11,7 +11,12 @@ or through the `vibe.py` orchestrator.
 
 Two practice targets ship with the repo so you can exercise everything below:
 - **`testapp/` (NovaChat)** — a deliberately vulnerable AI-chat app; every tool lands real findings.
-- **`/home/user/secretvault/` (SecretVault)** — a hardened, fully-encrypted vault; the honest "comes up empty" control.
+- **`everything2/` (hardened twin)** — the same app with the fixes applied (realpath traversal guard,
+  SSRF allowlist, HS256-only JWT, login rate limit, security headers). The honest "comes up empty" control.
+
+Every tool that judges a target makes a **control/baseline request** first: a path that cannot
+exist, a benign parameter value, or the probe's own reflected payload. A 200, a reflection, or a
+500 only counts as a finding when it differs from that control.
 
 ---
 
@@ -22,8 +27,8 @@ Map the attack surface before touching it.
 |------|------|
 | `ash` | Domain reconnaissance — DNS, TLS, tech/WAF fingerprint, public path probe |
 | `spider` | Attack-surface crawler — walks links/forms to enumerate routes |
-| `ghost` | Sensitive asset finder — hunts exposed files, backups, dotfiles |
-| `api_finder` | Hidden endpoint discovery — guesses/derives undocumented API paths |
+| `ghost` | Sensitive asset finder — hunts exposed files, backups, dotfiles; requires config/JS-shaped content, not just "a 200 with a brace" |
+| `api_finder` | Hidden endpoint discovery — guesses/derives undocumented API paths, skipping responses identical to the catch-all baseline |
 | `api_check` | Single-endpoint checker — quick one-off probe of a specific route |
 | `cloud_scout` | Cloud environment prober — metadata endpoints, bucket/role hints. *Note: flags any public 200 as "unprotected" — verify before trusting* |
 
@@ -42,16 +47,16 @@ What the server tells the browser to do (or fails to).
 | `vibe_headers` | HTTP security-policy auditor — CSP, HSTS, X-Frame-Options, etc. *Note: flags deprecated X-XSS-Protection and HSTS-on-loopback as critical — treat those as info* |
 | `corscan` | CORS misconfiguration scanner — reflected origins, credentialed wildcards |
 | `phantom` | Cookie & session-token analyzer — HttpOnly/Secure/SameSite flags |
-| `header_inject` | HTTP header injection & Host-header poisoning suite |
+| `header_inject` | HTTP header injection & Host-header poisoning suite — cache-poison hits must differ from a control response; Content-Type acceptance is informational |
 
 ## 🔐 Auth & Access Control
 Who can do what — and who shouldn't.
 
 | Tool | Role |
 |------|------|
-| `leep` | Logic-flow / auth-bypass auditor |
+| `leep` | Logic-flow / auth-bypass auditor — ignores catch-all 200s that match a nonexistent-path baseline |
 | `aukdoc` | Authentication boundary auditor. *Now baseline/differential — a 200 is only a breach if the endpoint was actually protected* |
-| `axios` | IDOR / object-ID exposure scanner (unauthenticated) |
+| `axios` | IDOR / object-ID exposure scanner (unauthenticated) — a 200 identical to the catch-all baseline is not a leak |
 | `random_roll` | Password-policy auditor — weak-password acceptance, lockout, enumeration |
 
 ## 🔥 Advanced Attacks — _internal edition only_
@@ -75,7 +80,7 @@ content), not a guess.
 
 | Tool | Role |
 |------|------|
-| `graphql_raider` | **GraphQL attack suite.** Autodetects the endpoint, dumps the schema via introspection (flags sensitive fields), enumerates object-level auth (IDOR) through `user(id)`-style queries, and detects query batching (defeats rate limits, amplifies brute-force). `--endpoint`. |
+| `graphql_raider` | **GraphQL attack suite.** Detects a real GraphQL endpoint (introspection/data envelope, not just an `errors` key), dumps the schema via introspection (flags sensitive fields), enumerates object-level auth (IDOR) through `user(id)`-style queries, and detects query batching (defeats rate limits, amplifies brute-force). `--endpoint`. |
 | `racer` | **Race-condition / limit-overrun tester.** Aligns N requests on a barrier so they hit together, then counts how many succeeded past a single-use limit (coupon redeem-twice, balance double-spend). More than one == non-atomic read-then-write. `--endpoint`/`--data`/`--count`/`--success`. |
 | `ssrf_cloud` | **SSRF → cloud metadata / internal.** Injects a URL-accepting param with AWS/GCP/Azure IMDS, internal ranges, `file://`/`gopher://`, and a same-host canary; confirms only when the server returns real internal/metadata content (strips reflected URLs to avoid false positives). `--param`/`--self`. |
 | `deserial` | **Insecure deserialization detector.** Sends a Python pickle whose `__reduce__` sleeps; a matching stall proves the server executes attacker pickles (RCE). Also fingerprints deserializer errors (pickle/PyYAML/Java/PHP/.NET) and probes `__proto__`/mass-assignment. `--endpoint`/`--field`. |
@@ -100,12 +105,12 @@ Send malformed input, watch what breaks.
 
 | Tool | Role |
 |------|------|
-| `authdoc` | WAF & input-filter auditor |
+| `authdoc` | WAF & input-filter auditor — compares each payload against a benign-parameter baseline, so a page that ignores the parameter is not reported as "unfiltered" |
 | `fuzz_vibe` | URL parameter fuzzer |
 | `biz_logic` | Business-logic & parameter-pollution fuzzer |
 | `redirect` | Open-redirect scanner |
-| `traversal_sniper` | Path traversal / LFI for `.env` & config files. `--app-root <path>` adds precise absolute-path payloads when a stack trace leaks the real root |
-| `ssrf_probe` | Server-side request forgery (via computer-use / instruct endpoints) |
+| `traversal_sniper` | Path traversal / LFI for `.env` & config files. Probes static roots, query-parameter file endpoints (`/files?path=…`), encodings and Windows paths; a hit requires real file content (env lines, passwd/ini markers, source) that differs from both the catch-all baseline and a non-traversal control request. `--app-root <path>` adds precise absolute-path payloads |
+| `ssrf_probe` | Server-side request forgery (via computer-use / instruct endpoints) — tries the common fetch-field names (`url`, `uri`, `target`, `endpoint`) and only counts a hit when the response carries the fetched content |
 | `prompt_injector` | LLM prompt-injection suite (targets `/api/chat`-style endpoints) |
 | `timebomb` | Timing-attack / timing-oracle detector |
 | `exploit_final` | **Reflected/stored XSS confirmer** — injects a unique canary, reads it back, and reports a finding only if it comes back *unescaped*. `--field` picks the body field, `--check-url` reads a stored-XSS surface |
@@ -117,9 +122,9 @@ Find the things that should never have left the server.
 |------|------|
 | `env_probe` | Environment-variable & stack-trace leakage probe |
 | `senoria` | Public web asset secret scanner — crawls served pages/JS/config for API-key/token leaks. Redacts by default; `--show-keys` reveals raw matches for localhost/private targets only |
-| `deep_extract` | Focused API-key deep extraction |
+| `deep_extract` | Focused API-key deep extraction — reads plain JSON replies and SSE frames, matches real `sk-or-…` keys (dashes included), and never calls its own reflected payload a leak |
 | `key_stealer` | Multi-vector API-key extraction (injection, error-based, header oracle, SSRF, config-mining). Redacts findings by default; `--show-keys` reveals raw on your own app |
-| `credit_drain` | API credit-drain / rate-limit auditor |
+| `credit_drain` | API credit-drain / rate-limit auditor — reports a drainable endpoint only when paid-model calls actually succeed with no 429; a 404 endpoint is inconclusive, not "drainable" |
 | `exploit_vault` | Generates a localStorage-exfil XSS payload (PoC for a confirmed XSS sink) |
 
 ## 🔥 Load & Stress — _localhost, private, or explicitly trusted targets only_
@@ -129,7 +134,7 @@ Capacity and rate-limit testing. Public hosts require an exact entry in
 | Tool | Role |
 |------|------|
 | `storm` | Authorized-target traffic stressor (Python), with a safe `--url-check` mode |
-| `vibe_api` | JSON endpoint stressor |
+| `vibe_api` | JSON endpoint stressor — a 500 counts as a crash only when a benign control payload did not also 500 |
 | `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`); double-gated + rate-capped |
 
 ## 🔓 Authenticated Testing — _browser-assisted session_
@@ -142,9 +147,11 @@ See [`helpers/browser/README.md`](../helpers/browser/README.md).
 | `authcheck` | **Session verifier.** Loads your session (`VIBE_AUTH_FILE`/`VIBE_COOKIE`/`VIBE_UA`/`VIBE_HEADERS` or `--cookie`/`--auth-file`), fetches a URL, and reports **CHALLENGED** (still behind anti-bot), **ANONYMOUS** (logged-out), or **AUTHENTICATED** (good to go). Run it right after capturing a session. |
 | `helpers/browser/grab_session.js` | **Session grabber** (Node/Playwright, runs on *your* machine). Opens a real Chromium; you solve the challenge + log in; it exports cookies + UA to `session_auth.json`. Not a stdlib tool — an optional browser helper. |
 
-> Once a session is set, **all** tools that use the shared HTTP client (and any
-> `urllib.urlopen` tool) carry your cookies + matching User-Agent automatically —
-> no per-tool flag needed. `cf_clearance` is UA-bound, so the toolkit sends the
+> Once a session is set, tools that use the shared client (`safe_request`) and
+> any raw `urllib.urlopen` call carry your cookies + matching User-Agent
+> automatically — no per-tool flag needed. A few internal tools deliberately use
+> their own opener (e.g. `traversal_sniper`, `ssrf_probe`, `biz_logic`) and read
+> `auth_headers()` themselves where it matters. `cf_clearance` is UA-bound, so the toolkit sends the
 > browser's UA to match. `session_auth.json` is a live login: it's git-ignored.
 
 ## 📊 Reporting & Session
@@ -152,18 +159,22 @@ Turn findings into receipts; manage the workspace.
 
 | Tool | Role |
 |------|------|
-| `lmx` | Executive security-dashboard generator (`vibe.py report`) |
+| `lmx` | Executive security-dashboard generator (`vibe.py report`); counts log markers exactly instead of substring-matching |
 | `poc_gen` | Exploit proof-of-concept generator |
 | `backer` | Session-data backup utility |
+| `findings` | Structured findings helpers — records per-tool rc, HACK/CRITICAL markers, FAIL lines, and writes `logs/findings-*.json` |
+| `attack_run` | Kill-chain runner used by `python -m vb.cli attack` (authcheck gate, 5 phases, redteam, findings JSON) |
 | `seagull` | Log-noise filter — strips info chatter, keeps warnings/criticals |
 | `void` | Environment cleaner — scrubs injected test payloads from a target DB (`vibe.py clean`) |
 | `codex_boot` | Compact workspace snapshot (`vibe.py codex`) |
+| `run_lmx` | Convenience wrapper that regenerates the LMX dashboard from the current logs |
 
 ## 🤖 Orchestration
 | Entry | Role |
 |------|------|
 | `vibe.py scan` | Chained deep scan (ash → vibe_headers → ghost → leep) |
-| `vibe.py attack` | Full ordered kill-chain across all phases, then the gated load phase |
+| `vibe.py attack` | Full ordered kill-chain across all phases, then the gated load phase. Locked tools are skipped unless you pass `--allow-locked` or confirm interactively; the summary lists tools that logged FAIL lines |
+| `python -m vb.cli attack` | Same chain through the internal CLI (`run_attack_cli.py`), with the same locked-tool gate |
 | `vibe.py multi` | Parallel launcher: local/private by default; `multi scan/attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
 | `vibe.py trust` | Manage the `authorized_targets.txt` load-test allowlist |
 | `claude.py` | Autonomous brain — Claude drives the toolset adaptively against one authorized target and writes a report |

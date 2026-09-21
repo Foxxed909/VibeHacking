@@ -4,7 +4,7 @@ import argparse
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seagull - Traffic Noise Filter")
     parser.add_argument("--log", default=os.path.join(_root, "logs", "raw_proxy_traffic.txt"), help="Raw proxy log file")
     parser.add_argument("--out", default=os.path.join(_root, "logs", "clean_attack_surface.txt"), help="Output file for filtered results")
-    parser.add_argument('-v', '--version', action='version', version='Seagull 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Seagull {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Seagull().run(args.log, args.out)

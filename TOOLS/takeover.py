@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 # service -> (CNAME suffixes that route to it, unclaimed-response fingerprints)
@@ -300,7 +300,7 @@ def main(argv=None):
     p.add_argument("--wordlist", help="Extra subdomain labels/names, one per line, added to --enum")
     p.add_argument("--ct", action="store_true",
                    help="Also query Certificate Transparency logs during --enum (best-effort)")
-    p.add_argument("-v", "--version", action="version", version="Takeover 2.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Takeover {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
 
     if args.enum:

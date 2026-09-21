@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, AuthHandler
+from vibe_core import VibeTool, FRAMEWORK_VERSION, AuthHandler
 from privacy_guard import privacy_user_agent
 
 
@@ -113,7 +113,12 @@ class CSRFForge(VibeTool):
         cross_st, cross_body, _ = self._req(opener, endpoint, method, data=fields, headers=cross_headers)
         self.log(f"Cross-site (foreign Origin/Referer, no token) -> {cross_st}")
 
-        server_accepts = cross_st < 400 and cross_st != 0
+        # 2xx = the action ran. 3xx = redirect (typically to a login page), which
+        # is a rejection; the old `cross_st < 400` counted that as acceptance.
+        server_accepts = 200 <= cross_st < 300
+        if 300 <= cross_st < 400:
+            self.log("Cross-site request was redirected (login/anti-CSRF redirect) — "
+                     "treated as rejected.", "pass")
         # What actually protects the browser: the session cookie's SameSite.
         samesite = ""
         low = setcookie.lower()
@@ -155,7 +160,7 @@ def main(argv=None):
     p.add_argument("--user-field", default="username")
     p.add_argument("--pass-field", default="password")
     p.add_argument("--cookie", default="", help="Use an existing session cookie instead of --login")
-    p.add_argument("-v", "--version", action="version", version="CSRF Forge 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"CSRF Forge {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     fields = dict(urllib.parse.parse_qsl(args.data)) if args.data else {}
     return CSRFForge(args.url).run(args.endpoint, args.method, fields, args.login, args.user,

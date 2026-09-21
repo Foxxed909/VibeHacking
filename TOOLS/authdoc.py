@@ -4,7 +4,7 @@ import argparse
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class AuthDoc(VibeTool):
@@ -27,6 +27,11 @@ class AuthDoc(VibeTool):
         blocked = 0
         exposed = 0
 
+        # Baseline: the same endpoint with a harmless query value. A response
+        # byte-identical to this means the parameter was ignored, which is not
+        # "the filter is missing" — the old code flagged every static page.
+        _, benign_body, _ = self.safe_request(f"{url.rstrip('/')}?q=vibe-baseline", method="GET")
+
         for name, data in payloads.items():
             self.log(f"Firing: {name}")
             query = urllib.parse.urlencode(data)
@@ -35,8 +40,13 @@ class AuthDoc(VibeTool):
             status, content, _ = self.safe_request(full_url, method='GET')
 
             if status == 200:
-                self.log(f"{name} payload accepted — filter is missing (200 OK)", "crit")
-                exposed += 1
+                if content and benign_body and content == benign_body:
+                    self.log(f"{name} response is identical to a benign request — the parameter "
+                             f"is ignored, not unfiltered", "pass")
+                    blocked += 1
+                else:
+                    self.log(f"{name} payload accepted — filter is missing (200 OK)", "crit")
+                    exposed += 1
             elif status == 500:
                 self.log(f"{name} payload crashed the server (500) — critical injection point", "crit")
                 exposed += 1
@@ -57,7 +67,7 @@ class AuthDoc(VibeTool):
         if exposed > 0:
             self.log(f"{exposed} unfiltered payload(s) — input validation is missing", "crit")
         elif blocked > 0:
-            self.log(f"All tested payloads blocked — filters appear active", "pass")
+            self.log("All tested payloads blocked — filters appear active", "pass")
         else:
             self.log("Inconclusive — no clear block or pass results", "warn")
 
@@ -66,7 +76,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AuthDoc - WAF & Input Filter Auditor")
     parser.add_argument("--url", required=True, help="Target endpoint (e.g. http://localhost:3456/search)")
     parser.add_argument("--type", choices=["SQLi", "XSS", "Path Traversal"], help="Run a specific payload type only")
-    parser.add_argument('-v', '--version', action='version', version='AuthDoc 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"AuthDoc {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     AuthDoc().run(args.url, args.type)

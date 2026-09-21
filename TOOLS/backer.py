@@ -5,7 +5,7 @@ import argparse
 import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backer - Session Data Backup Utility")
     parser.add_argument("--source", default=os.path.join(_root, "logs"), help="Directory to back up")
     parser.add_argument("--dest", default=os.path.join(_root, "backups"), help="Destination for backup")
-    parser.add_argument('-v', '--version', action='version', version='Backer 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Backer {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Backer().run(args.source, args.dest)

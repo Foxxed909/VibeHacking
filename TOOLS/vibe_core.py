@@ -1,9 +1,11 @@
 import sys
 import urllib.request
 import urllib.parse
+import ipaddress
 import json
 import os
 import datetime
+import time
 
 from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_data, sanitize_text
 
@@ -25,6 +27,143 @@ def _read_version():
 
 FRAMEWORK_VERSION = _read_version()
 
+# Default practice-target base URL. Tools that ship with a hardcoded
+# http://127.0.0.1:3456 default read it from here so an operator can point the
+# bundled targets (or their own lab) elsewhere without editing every tool:
+#   VIBE_BASE_URL=http://127.0.0.1:3457 python TOOLS/ssrf_probe.py --url ...
+DEFAULT_TARGET_BASE = (
+    os.environ.get("VIBE_BASE_URL") or "http://127.0.0.1:3456"
+).rstrip("/")
+
+LOCAL_HOST_LITERALS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def normalize_host(raw):
+    """Reduce a URL/host[:port] to a bare lowercase hostname. '' if unusable.
+
+    Rejects comment lines, wildcards and other placeholder syntax so a trust
+    list entry is always an exact hostname (or IP literal).
+    """
+    host = (raw or "").strip()
+    if not host or host.startswith("#") or any(ch in host for ch in "*?"):
+        return ""
+    if "://" in host:
+        try:
+            host = urllib.parse.urlparse(host).hostname or ""
+        except ValueError:
+            return ""
+    host = host.split("/")[0].strip().lower()
+    if "@" in host:
+        host = host.split("@")[-1]
+    if host.count(":") == 1:  # strip a single trailing :port (leaves IPv6 alone)
+        host = host.split(":")[0]
+    return host
+
+
+def is_local_or_private(host):
+    """True for loopback/private/link-local/unique-local addresses.
+
+    Hostnames we cannot classify without DNS are treated as external. Uses
+    ``is_global`` so shared address space (CGNAT 100.64/10, benchmarking
+    198.18/15, and other non-public ranges) counts as non-public too.
+    """
+    host = (host or "").strip().lower().strip("[]")
+    if not host:
+        return False
+    if host in LOCAL_HOST_LITERALS:
+        return True
+    if host.endswith(".localhost") or host.endswith(".internal"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not ip.is_global
+
+
+LOCKED_MANIFEST = os.path.join(_root, "vb", "locked", "manifest.json")
+
+
+def locked_tools(manifest_path=None):
+    """Return {tool: reason} for tools that require explicit confirmation."""
+    path = manifest_path or LOCKED_MANIFEST
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    locked = data.get("locked_tools") or {}
+    return {name: (meta or {}).get("reason", "high-impact authorized-testing tool")
+            for name, meta in locked.items()}
+
+
+def _locked_gate(names, reasons=None, assume_yes=False, log_path=None):
+    """Shared consent gate for one or more locked tools.
+
+    Returns the set of tool names the operator allowed. ``assume_yes`` is an
+    explicit opt-in (``--allow-locked`` / ``VIBE_LOCKED_ACK``), never silent.
+    """
+    names = [n for n in names if n]
+    reasons = reasons or {}
+
+    def _log(allowed, detail):
+        if not log_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(f"{stamp}\ttools={','.join(names)}\t"
+                             f"allowed={str(allowed).lower()}\tdetail={detail}\n")
+        except OSError:
+            pass
+
+    if not names:
+        return set()
+
+    phrase = "I OWN THIS TARGET"
+    if assume_yes:
+        _log(True, "flag")
+        return set(names)
+    if os.environ.get("VIBE_LOCKED_ACK") == phrase:
+        _log(True, "env_ack")
+        return set(names)
+
+    if not sys.stdin.isatty():
+        print(f"[-] {len(names)} locked tool(s) requested in a non-interactive session.")
+        print(f"    Re-run with an explicit opt-in (--allow-locked / "
+              f"VIBE_LOCKED_ACK='{phrase}') on a target you own.")
+        _log(False, "non_interactive")
+        return set()
+
+    print("=" * 64)
+    print("LOCKED AUTHORIZED-ONLY TOOL" + ("S" if len(names) > 1 else ""))
+    for name in names:
+        print(f"Tool   : {name}")
+        print(f"Reason : {reasons.get(name, 'high-impact authorized-testing tool')}")
+    print("Run these only on systems you own or have written permission to test.")
+    print("=" * 64)
+    sys.stdout.flush()
+    try:
+        answer = input(f"Type '{phrase}' to proceed, anything else to skip: ")
+    except (EOFError, KeyboardInterrupt):
+        _log(False, "aborted")
+        return set()
+    allowed = answer.strip() == phrase
+    _log(allowed, "typed_confirmation" if allowed else "declined")
+    return set(names) if allowed else set()
+
+
+def confirm_locked_tool(tool, reason="", assume_yes=False, log_path=None):
+    """Interactive gate for a single locked tool. Returns True to proceed."""
+    return tool in _locked_gate([tool], {tool: reason}, assume_yes=assume_yes,
+                                log_path=log_path)
+
+
+def confirm_locked_tools(tools, reasons=None, assume_yes=False, log_path=None):
+    """Confirm a batch of locked tools once; returns the set of allowed names."""
+    return _locked_gate(list(tools), reasons, assume_yes=assume_yes, log_path=log_path)
+
 
 # ---------------------------------------------------------------------------
 # Authenticated-session context (browser-assisted testing)
@@ -43,6 +182,18 @@ FRAMEWORK_VERSION = _read_version()
 #   - env VIBE_AUTH_FILE: path to JSON {cookie|cookies, user_agent, headers}
 #                         (the browser helper writes this file)
 # ---------------------------------------------------------------------------
+def _canonical_header(name):
+    """Canonicalize a lowercase header name (``x-api-key`` -> ``X-Api-Key``).
+
+    Callers that already chose their own casing are left untouched. HTTP header
+    names are case-insensitive, but some servers and WAFs are picky about the
+    conventional form, so tools that pass lowercase dict keys are normalized.
+    """
+    if not isinstance(name, str) or not name or not name.islower():
+        return name
+    return "-".join(part.capitalize() for part in name.split("-"))
+
+
 def _cookies_to_header(cookies):
     if isinstance(cookies, str):
         return cookies
@@ -108,7 +259,7 @@ class _AuthHandler(urllib.request.BaseHandler):
                 pass
             req.add_unredirected_header("User-agent", ua)
         for key, value in extra.items():
-            req.add_unredirected_header(key.capitalize() if key.islower() else key, value)
+            req.add_unredirected_header(_canonical_header(key), value)
         return req
 
     def http_request(self, req):
@@ -213,17 +364,48 @@ class VibeTool:
         sys.stdout.flush()
 
     def save_session(self, data):
-        with open(self.session_file, 'w') as f:
+        with open(self.session_file, 'w', encoding='utf-8') as f:
             json.dump(sanitize_data(data), f, indent=4)
 
     def load_session(self):
         if os.path.exists(self.session_file):
             try:
-                with open(self.session_file, 'r') as f:
+                with open(self.session_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
+
+    def baseline_probe(self, base_url, timeout=5):
+        """Fetch a random not-found path to detect catch-all servers.
+
+        SPA fallbacks, dev servers and WAFs frequently answer 200 to every
+        path, which makes "HTTP 200 == vulnerable" evidence meaningless. Tools
+        should call this once and downgrade status-only evidence when
+        ``catch_all`` is True.
+        """
+        token = "vibe-baseline-%s" % datetime.datetime.now().strftime("%H%M%S%f")
+        url = base_url.rstrip("/") + "/" + token
+        status, body, _ = self.safe_request(url, method="GET")
+        body = body or ""
+        return {
+            "url": url,
+            "status": status,
+            "length": len(body),
+            "body": body,
+            "catch_all": status == 200,
+        }
+
+    def is_catch_all(self, base_url):
+        """True when the target answers 200 for a path that cannot exist."""
+        return self.baseline_probe(base_url).get("catch_all", False)
+
+    @staticmethod
+    def matches_baseline(body, baseline):
+        """True when a response is byte-identical to the not-found baseline."""
+        if not baseline:
+            return False
+        return (body or "") == baseline.get("body", "")
 
     def safe_request(self, url, method='GET', data=None, headers=None):
         if headers is None:

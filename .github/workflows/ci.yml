@@ -64,9 +64,17 @@ jobs:
           python TOOLS/exploit_final.py --url http://127.0.0.1:3456/api/guestbook \
             --field text --check-url http://127.0.0.1:3456/ > xss.txt || true
           python TOOLS/key_stealer.py --url http://127.0.0.1:3456/ > keys.txt
+          # These two only pass if the tools require real evidence: the traversal
+          # must return file content and the SSRF must post the field the target reads.
+          python TOOLS/traversal_sniper.py --url http://127.0.0.1:3456/ > traversal.txt
+          python TOOLS/ssrf_probe.py --url http://127.0.0.1:3456/ > ssrf.txt
+          python TOOLS/biz_logic.py --url http://127.0.0.1:3456/ > bizlogic.txt
 
           grep -q "MISSING: Content-Security-Policy" headers.txt
           grep -q "CONFIRMED XSS" xss.txt
           grep -q "KEY CANDIDATE" keys.txt
+          grep -q "TRAVERSAL CONFIRMED" traversal.txt
+          grep -q "SSRF HIT" ssrf.txt
+          grep -q "IDOR" bizlogic.txt
 
           echo "Practice-target end-to-end checks passed."

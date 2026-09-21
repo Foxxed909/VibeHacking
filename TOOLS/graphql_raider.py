@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 CANDIDATE_PATHS = ["/graphql", "/api/graphql", "/graphql/v1", "/v1/graphql",
@@ -51,7 +51,11 @@ class GraphQLRaider(VibeTool):
     def _find_endpoint(self, override):
         for path in ([override] if override else CANDIDATE_PATHS):
             st, body = self._post(path, INTROSPECTION)
-            if st and ("__schema" in body or "\"data\"" in body or "errors" in body):
+            # `errors` alone is not proof: any JSON API error response contains it.
+            # Require introspection data or a real GraphQL response envelope.
+            if st and ("__schema" in body
+                       or ("\"data\"" in body and "extensions" in body)
+                       or "GraphQL" in body):
                 return path, body
         return "", ""
 
@@ -107,7 +111,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="GraphQL Raider - GraphQL attack suite")
     p.add_argument("--url", required=True, help="Target base URL you own/are authorized to test")
     p.add_argument("--endpoint", default="", help="GraphQL path (default: autodetect)")
-    p.add_argument("-v", "--version", action="version", version="GraphQL Raider 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"GraphQL Raider {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return GraphQLRaider(args.url).run(args.endpoint)
 

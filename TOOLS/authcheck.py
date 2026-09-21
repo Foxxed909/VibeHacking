@@ -22,7 +22,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, auth_context
+from vibe_core import VibeTool, FRAMEWORK_VERSION, auth_context
 
 CHALLENGE_MARKERS = (
     "just a moment", "verifying you are human", "attention required",
@@ -98,7 +98,7 @@ def main(argv=None):
     p.add_argument("--cookie", help="Raw Cookie header (sets VIBE_COOKIE for this run)")
     p.add_argument("--auth-file", help="Session JSON file (sets VIBE_AUTH_FILE for this run)")
     p.add_argument("--ua", help="User-Agent to match the session (sets VIBE_UA)")
-    p.add_argument("-v", "--version", action="version", version="AuthCheck 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"AuthCheck {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     if args.cookie:
         os.environ["VIBE_COOKIE"] = args.cookie

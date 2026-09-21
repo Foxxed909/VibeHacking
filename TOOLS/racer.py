@@ -15,7 +15,6 @@ SUCCEEDED. More than the intended limit == exploitable race.
 """
 import argparse
 import concurrent.futures
-import json
 import os
 import sys
 import threading
@@ -23,7 +22,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 
@@ -96,7 +95,7 @@ def main(argv=None):
     p.add_argument("--success", dest="success_marker", default="",
                    help="Substring/field marking success (e.g. 'granted'); default: any 2xx")
     p.add_argument("--cookie", default="", help="Session cookie if the action needs auth")
-    p.add_argument("-v", "--version", action="version", version="Racer 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Racer {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return Racer(args.url).run(args.endpoint, args.method, args.data, max(2, args.count),
                                args.success_marker, args.cookie)

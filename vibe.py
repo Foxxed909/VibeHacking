@@ -4,15 +4,51 @@ import concurrent.futures
 import subprocess
 import os
 import json
-import ipaddress
 import re
 import time
 import urllib.parse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(ROOT_DIR, "TOOLS")
+
+
+NON_CLI_MODULES = {"vibe_core.py", "privacy_guard.py", "findings.py", "attack_run.py"}
+
+
+def _tool(name):
+    """Absolute path to a bundled tool script (works from any cwd)."""
+    return os.path.join(TOOLS_DIR, name)
+
+
+_TOOL_DESC_RE = re.compile(
+    r'(?:super\(\)\.__init__|VibeTool)\(\s*"[^"]*"\s*,\s*"([^"]+)"', re.S
+)
+
+
+def _tool_description(path):
+    """Read a tool's own one-line description for `vibe.py list`.
+
+    Tools declare themselves as ``VibeTool("Name", "Description")``; fall back
+    to the module docstring's first line. Returns "" when neither exists.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError:
+        return ""
+    match = _TOOL_DESC_RE.search(content)
+    if match:
+        return match.group(1).strip()
+    doc = re.match(r'\s*(?:"""|\'\'\')(.*?)(?:"""|\'\'\')', content, re.S)
+    if doc:
+        first_line = next((ln.strip() for ln in doc.group(1).splitlines() if ln.strip()), "")
+        if first_line and not first_line.startswith("http"):
+            return first_line.rstrip(".")
+    return ""
 sys.path.insert(0, TOOLS_DIR)
 from privacy_guard import privacy_summary_lines, sanitize_data, sanitize_text
+from vibe_core import (confirm_locked_tools, is_local_or_private as _shared_is_local_or_private,
+                       locked_tools as _locked_tool_map)
 
 
 def _read_version():
@@ -57,12 +93,13 @@ def run_command(args, cwd=None, env_extra=None, capture=False):
 
 
 def run_tool(args, env_extra=None, capture=False):
-    return run_command([sys.executable, *args], env_extra=env_extra, capture=capture)
+    # Always run children from the repo root so relative paths in tools and
+    # logs/ land in one predictable place, no matter where vibe.py was invoked.
+    return run_command([sys.executable, *args], cwd=ROOT_DIR, env_extra=env_extra, capture=capture)
 
 
 AUTHORIZED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "authorized_targets.txt")
 
-LOCAL_LITERALS = {"localhost", "127.0.0.1", "::1"}
 MAX_EXTERNAL_MAELSTROM_RPS = 9999.99
 
 # Ordered kill-chain for `vibe.py attack`. Each phase is (title, [tool stems]).
@@ -89,6 +126,48 @@ def _write_session(url):
         os.makedirs(session_dir, exist_ok=True)
     with open(session_path, "w", encoding="utf-8") as f:
         json.dump(sanitize_data({"target": url, "last_scan": str(os.times())}), f)
+
+
+def _log_dir():
+    return os.environ.get("VIBE_LOG_DIR") or os.path.join(ROOT_DIR, "logs")
+
+
+def _log_line_counts():
+    """Snapshot {path: line_count} of tool session logs, for delta reporting.
+
+    Tools exit 0 even when they log failures, so the attack summary counts
+    FAIL lines appended during the run instead of trusting return codes alone.
+    """
+    snapshot = {}
+    try:
+        names = os.listdir(_log_dir())
+    except OSError:
+        return snapshot
+    for name in names:
+        if not name.endswith("_session.log"):
+            continue
+        path = os.path.join(_log_dir(), name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                snapshot[path] = len(handle.readlines())
+        except OSError:
+            continue
+    return snapshot
+
+
+def _new_fail_lines(snapshot):
+    """Return {tool: FAIL-line count} for failures logged since the snapshot."""
+    failures = {}
+    for path, start in (snapshot or {}).items():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        count = sum(1 for line in lines[start:] if "[-] FAIL" in line)
+        if count:
+            failures[os.path.basename(path)[: -len("_session.log")]] = count
+    return failures
 
 
 def _dedupe_keep_order(values):
@@ -400,7 +479,7 @@ def _add_trusted(raw):
             handle.write("\n")
         handle.write(host + "\n")
     print(f"[+] Trusted {host}. The load tools will now accept it.")
-    print(f"    Only do this for hosts you own or are authorized to test.")
+    print("    Only do this for hosts you own or are authorized to test.")
     return 0
 
 
@@ -426,13 +505,8 @@ def _remove_trusted(raw):
 
 
 def _is_local_or_private(host):
-    if host in LOCAL_LITERALS:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        return ip.is_loopback or ip.is_private or ip.is_link_local
-    except ValueError:
-        return False  # a hostname we can't classify without DNS — treat as external
+    """Single implementation lives in vibe_core (shared with the other CLIs)."""
+    return _shared_is_local_or_private(host)
 
 
 def _extract_target(forwarded):
@@ -537,12 +611,18 @@ def run_vibe():
     attack_parser.add_argument("url", help="Target URL (e.g. https://your-app.com/)")
     attack_parser.add_argument("--skip-load", action="store_true", help="Skip the load/stress phase entirely")
     attack_parser.add_argument("--yes", action="store_true", help="Skip the external-target confirmation for the load phase")
+    attack_parser.add_argument(
+        "--allow-locked",
+        action="store_true",
+        help="Run the locked (high-impact) audit tools in the chain. Without this "
+             "flag they are skipped unless you confirm interactively.",
+    )
 
     # Command: report
-    report_parser = subparsers.add_parser("report", help="Generate the LMX Executive Dashboard")
+    subparsers.add_parser("report", help="Generate the LMX Executive Dashboard")
 
     # Command: privacy
-    privacy_parser = subparsers.add_parser("privacy", help="Show tester privacy controls and limits")
+    subparsers.add_parser("privacy", help="Show tester privacy controls and limits")
 
     # Command: clean
     clean_parser = subparsers.add_parser("clean", help="Run the Environment Cleaner (Void)")
@@ -646,10 +726,10 @@ def run_vibe():
     trust_sub.add_parser("list", help="List currently trusted hosts")
 
     # Command: status
-    status_parser = subparsers.add_parser("status", help="Check current session status")
+    subparsers.add_parser("status", help="Check current session status")
 
     # Command: list
-    list_parser = subparsers.add_parser("list", help="List all available hack tools")
+    subparsers.add_parser("list", help="List all available hack tools")
 
     # Command: codex
     codex_parser = subparsers.add_parser("codex", help="Print a compact workspace snapshot")
@@ -696,16 +776,16 @@ def run_vibe():
 
         # Chain together multiple tools for a "Deep Scan"
         print("[*] Phase 1: Domain Recon (Ash)...")
-        run_tool(["TOOLS/ash.py", "--url", args.url])
+        run_tool([_tool("ash.py"), "--url", args.url])
 
         print("[*] Phase 2: Header Security Audit...")
-        run_tool(["TOOLS/vibe_headers.py", "--url", args.url])
+        run_tool([_tool("vibe_headers.py"), "--url", args.url])
 
         print("[*] Phase 3: Hidden Asset Discovery (Ghost)...")
-        run_tool(["TOOLS/ghost.py", "--url", args.url])
+        run_tool([_tool("ghost.py"), "--url", args.url])
 
         print("[*] Phase 4: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", "--url", args.url])
+        run_tool([_tool("leep.py"), "--url", args.url])
         
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 
@@ -719,17 +799,43 @@ def run_vibe():
 
         executed = 0
         flagged = []  # tools that exited non-zero (error OR finding — check logs)
+        failed_logs = {}  # tool -> FAIL lines written during this run
+
+        # Locked tools are gated here too: `vibe.py attack` used to dispatch
+        # them with no consent step at all, bypassing the gate in vb/cli.py.
+        locked = _locked_tool_map()
+        locked_in_chain = [t for _, tools in ATTACK_PHASES for t in tools if t in locked]
+        allowed_locked = set()
+        if locked_in_chain:
+            if args.allow_locked:
+                print(f"[*] --allow-locked: running {len(locked_in_chain)} gated tool(s): "
+                      f"{', '.join(locked_in_chain)}")
+                allowed_locked = set(locked_in_chain)
+            else:
+                allowed_locked = confirm_locked_tools(
+                    locked_in_chain, locked, assume_yes=False,
+                    log_path=os.path.join(ROOT_DIR, "logs", "locked_cli_access.log"),
+                )
+                if not allowed_locked:
+                    print(f"[i] Skipping gated tool(s): {', '.join(locked_in_chain)}")
+                    print("    Pass --allow-locked (only on a target you own) to include them.")
+
+        log_marks = _log_line_counts()
         for phase_num, (title, tools) in enumerate(ATTACK_PHASES, start=1):
             print("\n" + "=" * 60)
             print(f"  PHASE {phase_num}: {title.upper()}")
             print("=" * 60)
             for tool in tools:
+                if tool in locked and tool not in allowed_locked:
+                    print(f"\n[i] -> {tool} skipped (locked tool; see --allow-locked)")
+                    continue
                 print(f"\n[*] -> {tool}")
                 sys.stdout.flush()
-                rc = run_tool([f"TOOLS/{tool}.py", "--url", url]).returncode
+                rc = run_tool([_tool(f"{tool}.py"), "--url", url]).returncode
                 executed += 1
                 if rc not in (0, None):
                     flagged.append(tool)
+        failed_logs = _new_fail_lines(log_marks)
 
         # Load & stress phase — gated behind trust + typed confirmation for external hosts.
         load_phase = len(ATTACK_PHASES) + 1
@@ -751,40 +857,43 @@ def run_vibe():
             if run_load:
                 print("\n[*] -> storm (safe single-probe check)")
                 sys.stdout.flush()
-                run_tool(["TOOLS/storm.py", "--url", url, "--url-check"])
+                run_tool([_tool("storm.py"), "--url", url, "--url-check"])
                 print("\n[*] -> storm (stress)")
                 sys.stdout.flush()
-                run_tool(["TOOLS/storm.py", "--url", url, "--duration", "15",
+                run_tool([_tool("storm.py"), "--url", url, "--duration", "15",
                           "--entries-per-min", "600", "--concurrency", "20", "--timeout", "5", "--yes"])
                 print("\n[*] -> vibe_api (JSON endpoint stress)")
                 sys.stdout.flush()
-                run_tool(["TOOLS/vibe_api.py", "--url", url])
+                run_tool([_tool("vibe_api.py"), "--url", url])
                 print("\n[*] -> maelstrom (Go load tester)")
                 sys.stdout.flush()
                 run_command(["go", "run", ".", "-t", url, "-d", "15s", "-r", "50", "-w", "32"],
-                            cwd=os.path.join("TOOLS", "maelstrom"))
+                            cwd=os.path.join(TOOLS_DIR, "maelstrom"))
 
         # Reporting & receipts.
         print("\n" + "=" * 60)
         print("  PHASE: REPORTING & RECEIPTS")
         print("=" * 60)
         print("\n[*] -> poc_gen")
-        run_tool(["TOOLS/poc_gen.py", "--url", url])
+        run_tool([_tool("poc_gen.py"), "--url", url])
         print("\n[*] -> lmx executive dashboard")
-        run_tool(["TOOLS/lmx.py"])
+        run_tool([_tool("lmx.py")])
         print("\n[*] -> backer (session backup)")
-        run_tool(["TOOLS/backer.py"])
+        run_tool([_tool("backer.py")])
 
         print("\n" + "=" * 60)
         print(f"[+] Attack run complete. {executed} audit tools executed across {len(ATTACK_PHASES)} phases.")
         if flagged:
             print(f"[!] Exited non-zero (error or finding — check logs/): {', '.join(flagged)}")
+        if failed_logs:
+            detail = ", ".join(f"{tool} x{count}" for tool, count in sorted(failed_logs.items()))
+            print(f"[!] Tools that logged FAIL lines during this run: {detail}")
         print("    Findings in logs/, dashboard in reports/. Re-run after patching to confirm fixes.")
         return 0
 
     elif args.command == "report":
         print("[*] Compiling Real-Time Executive Dashboard...")
-        run_tool(["TOOLS/lmx.py"])
+        run_tool([_tool("lmx.py")])
 
     elif args.command == "privacy":
         for line in privacy_summary_lines():
@@ -792,7 +901,7 @@ def run_vibe():
 
     elif args.command == "clean":
         print("[*] Executing Environmental Decontamination...")
-        cmd = ["TOOLS/void.py"]
+        cmd = [_tool("void.py")]
         if args.db: cmd += ["--db", args.db]
         run_tool(cmd)
 
@@ -802,7 +911,7 @@ def run_vibe():
             forwarded = forwarded[1:]
         print("[*] Launching NoLoader URL verifier...")
         sys.stdout.flush()
-        return run_tool(["TOOLS/noloader.py", *forwarded]).returncode
+        return run_tool([_tool("noloader.py"), *forwarded]).returncode
 
     elif args.command == "senoria":
         forwarded = list(args.senoria_args)
@@ -810,7 +919,7 @@ def run_vibe():
             forwarded = forwarded[1:]
         print("[*] Launching Senoria leaked-API audit...")
         sys.stdout.flush()
-        return run_tool(["TOOLS/senoria.py", *forwarded]).returncode
+        return run_tool([_tool("senoria.py"), *forwarded]).returncode
 
     elif args.command == "storm":
         is_check = args.url_check or args.urls_file
@@ -828,7 +937,7 @@ def run_vibe():
                 if not _external_warning(host, rate_desc=rate, assume_yes=args.yes):
                     return 2
         cmd = [
-            "TOOLS/storm.py",
+            _tool("storm.py"),
             "--duration",
             str(args.duration),
             "--entries-per-min",
@@ -878,7 +987,7 @@ def run_vibe():
                 return 2
 
         print("[*] Launching Maelstrom load test...")
-        return run_command(["go", "run", ".", *forwarded], cwd=os.path.join("TOOLS", "maelstrom")).returncode
+        return run_command(["go", "run", ".", *forwarded], cwd=os.path.join(TOOLS_DIR, "maelstrom")).returncode
 
     elif args.command == "trust":
         if args.trust_action == "add":
@@ -906,24 +1015,19 @@ def run_vibe():
             print("[-] No active session found.")
 
     elif args.command == "list":
-        tools_dir = "TOOLS"
         print("[*] Available Professional Toolset:")
-        if os.path.exists(os.path.join(tools_dir, "maelstrom")):
+        if os.path.isdir(os.path.join(TOOLS_DIR, "maelstrom")):
             print("  -> maelstrom - Go private-target load tester")
-        for t in os.listdir(tools_dir):
-            if t.endswith(".py") and t not in {"vibe_core.py", "privacy_guard.py"}:
-                description = ""
-                # Quick peek at first few lines for description
-                try:
-                    with open(os.path.join(tools_dir, t), 'r') as f:
-                        content = f.read(500)
-                        if "description" in content.lower():
-                            description = " - Functional Tool"
-                except: pass
-                print(f"  -> {t.replace('.py', '')}{description}")
+        for t in sorted(os.listdir(TOOLS_DIR)):
+            # Library modules have no CLI of their own; keep them out of the listing.
+            if not t.endswith(".py") or t in NON_CLI_MODULES:
+                continue
+            description = _tool_description(os.path.join(TOOLS_DIR, t))
+            suffix = f" - {description}" if description else ""
+            print(f"  -> {t[:-3]}{suffix}")
 
     elif args.command == "codex":
-        cmd = ["TOOLS/codex_boot.py"]
+        cmd = [_tool("codex_boot.py")]
         if args.target:
             cmd += ["--target", args.target]
         if args.ultra:

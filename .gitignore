@@ -42,6 +42,7 @@ chatgpt_*.png
 
 # NovaChat runtime-generated assets
 testapp/public/
+everything2/public/
 
 # Engagement tool output (may contain live responses)
 engagements/output/

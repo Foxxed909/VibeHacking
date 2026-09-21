@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, AuthHandler
+from vibe_core import VibeTool, FRAMEWORK_VERSION, AuthHandler
 from privacy_guard import privacy_user_agent
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -281,7 +281,7 @@ class RedTeam(VibeTool):
                            "inject", label=f"deserial({path})")
         for path in take("fetch"):
             prm = next((p for p in self.ep[path]["params"] if p in URL_PARAM_NAMES), "url")
-            self._run_tool("ssrf_cloud", [f"--url", f"{self.base}{path}?{prm}=x", "--param", prm,
+            self._run_tool("ssrf_cloud", ["--url", f"{self.base}{path}?{prm}=x", "--param", prm,
                                           "--self", self.base], "ssrf", label=f"ssrf_cloud({path})")
         for path in take("xml"):
             self._run_tool("xxe_raider", ["--url", self.base + path, "--self", self.base],
@@ -324,7 +324,7 @@ def main(argv=None):
     p.add_argument("--user", default="", help="A username to use for authed phases")
     p.add_argument("--pass", dest="password", default="", help="Password for --user")
     p.add_argument("--user-field", default="username", help="Login username field name")
-    p.add_argument("-v", "--version", action="version", version="RedTeam 2.1.0")
+    p.add_argument("-v", "--version", action="version", version=f"RedTeam {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return RedTeam(args.url).run(args.user, args.password, args.user_field)
 

@@ -5,7 +5,7 @@ import ipaddress
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 # Each header carries the severity of it being ABSENT. This is deliberately
@@ -46,7 +46,6 @@ class VibeHeaders(VibeTool):
 
         parsed = urllib.parse.urlparse(url)
         is_https = parsed.scheme == "https"
-        local = _is_loopback_or_private((parsed.hostname or "").lower())
 
         status, content, headers = self.safe_request(url, method='GET')
 
@@ -106,7 +105,7 @@ class VibeHeaders(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vibe Headers - HTTP Security Policy Auditor")
     parser.add_argument("--url", required=True, help="Target URL (e.g. http://localhost:3456)")
-    parser.add_argument('-v', '--version', action='version', version='Header Auditor 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Header Auditor {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     VibeHeaders().run(args.url)

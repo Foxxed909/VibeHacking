@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, AuthHandler
+from vibe_core import VibeTool, FRAMEWORK_VERSION, AuthHandler
 from privacy_guard import privacy_user_agent
 
 SIGNUP_PATHS = ["/signup", "/register", "/api/signup", "/api/register", "/api/users", "/users/new"]
@@ -296,7 +296,7 @@ def main(argv=None):
     p.add_argument("--user-field", default="username", help="Login/signup username field name (e.g. email)")
     p.add_argument("--pass-field", default="password", help="Login/signup password field name")
     p.add_argument("--seed-ids", default="", help="Comma-separated victim object IDs to cross-test (skips harvest)")
-    p.add_argument("-v", "--version", action="version", version="Intruder 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Intruder {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return Intruder(args.url).run(args.signup, args.login, args.user_field, args.pass_field, args.seed_ids)
 

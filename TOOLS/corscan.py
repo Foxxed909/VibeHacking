@@ -4,7 +4,7 @@ import argparse
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class CorScan(VibeTool):
@@ -43,7 +43,9 @@ class CorScan(VibeTool):
                 self.log(f"{label}: no CORS headers returned", "info")
                 continue
 
-            reflected = (acao == origin or acao == '*')
+            # '*' is the wildcard case, handled separately below — it is not a
+            # reflected origin, and in the old code it made the wildcard branch dead.
+            reflected = (acao == origin)
             creds = (acac == 'true')
 
             if acao == '*' and creds:
@@ -70,7 +72,7 @@ class CorScan(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CorScan - CORS Misconfiguration Scanner")
     parser.add_argument("--url", required=True, help="Target URL (e.g. http://localhost:3456/api/user)")
-    parser.add_argument('-v', '--version', action='version', version='CorScan 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"CorScan {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     CorScan().run(args.url)

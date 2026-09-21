@@ -3,7 +3,7 @@ import os
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class Leep(VibeTool):
@@ -17,6 +17,12 @@ class Leep(VibeTool):
 
         flaws = 0
 
+        # Catch-all guard (SPA/dev servers answer 200 for everything).
+        baseline = self.baseline_probe(url)
+        if baseline.get("catch_all"):
+            self.log("Target returns 200 for a nonexistent path — a 200 alone cannot prove "
+                     "unauthenticated access; responses identical to that baseline are ignored.", "warn")
+
         for path in paths:
             target = f"{url.rstrip('/')}/{path.lstrip('/')}"
             self.log(f"Attempting leap to: /{path}")
@@ -25,7 +31,9 @@ class Leep(VibeTool):
 
             if status == 200:
                 if "login" in content.lower() or "sign in" in content.lower():
-                    self.log(f"200 but redirected to login — protected", "pass")
+                    self.log("200 but redirected to login — protected", "pass")
+                elif self.matches_baseline(content, baseline):
+                    self.log(f"/{path}: 200 identical to the catch-all baseline — inconclusive")
                 else:
                     self.log(f"LOGIC FLAW — /{path} accessible without auth (200 OK)", "crit")
                     flaws += 1
@@ -57,7 +65,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Leep - Logic Flow / Auth Bypass Auditor")
     parser.add_argument("--url", required=True, help="Target base URL (e.g. http://localhost:3456)")
     parser.add_argument("--paths", nargs='+', default=DEFAULT_PATHS, help="Protected paths to probe (default: common dashboard/billing/settings routes)")
-    parser.add_argument('-v', '--version', action='version', version='Leep 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Leep {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Leep().run(args.url, args.paths)

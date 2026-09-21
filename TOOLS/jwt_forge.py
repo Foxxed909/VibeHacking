@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*")
@@ -228,7 +228,7 @@ def main(argv=None):
     p.add_argument("--protected", default="", help="Protected endpoint to confirm a bypass against")
     p.add_argument("--token-mode", choices=("bearer", "cookie", "query"), default="bearer",
                    help="How the target reads the token (default: bearer)")
-    p.add_argument("-v", "--version", action="version", version="JWT Forge 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"JWT Forge {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return JWTForge(args.url).run(args.token, args.login, args.user, args.password,
                                   args.user_field, args.pass_field, args.protected, args.token_mode)

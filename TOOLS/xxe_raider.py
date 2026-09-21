@@ -36,7 +36,7 @@ import urllib.request
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 # Default template. {DOCTYPE} is where the entity declaration goes, {XXE} is
@@ -185,7 +185,7 @@ def main(argv=None):
                    help="Your target's own origin for a same-host SSRF canary")
     p.add_argument("--collab", default="",
                    help="Collaborator origin you control, to emit a blind/OOB XXE DTD")
-    p.add_argument("-v", "--version", action="version", version="XXE Raider 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"XXE Raider {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return XXERaider(args.url, args.template).run(args.self_origin, args.collab)
 

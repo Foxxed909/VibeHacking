@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 # Operator payloads placed as the PASSWORD value (JSON object).
@@ -93,7 +93,7 @@ def main(argv=None):
     p.add_argument("--user-field", default="username", help="Username field name (default: username)")
     p.add_argument("--pass-field", default="password", help="Password field name (default: password)")
     p.add_argument("--user", dest="username", default="admin", help="Username to target (default: admin)")
-    p.add_argument("-v", "--version", action="version", version="NoSQLi 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"NoSQLi {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return NoSQLi(args.url).run(args.user_field, args.pass_field, args.username)
 

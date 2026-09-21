@@ -25,7 +25,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_text
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 MAX_WORKERS = 80
@@ -611,7 +611,7 @@ def main(argv=None):
         help="Show and store raw matched keys for localhost/private targets only",
     )
     parser.add_argument("--fail-on-findings", action="store_true", help="Exit 1 when potential leaks are found")
-    parser.add_argument("-v", "--version", action="version", version="Senoria 1.0.0")
+    parser.add_argument("-v", "--version", action="version", version=f"Senoria {FRAMEWORK_VERSION}")
     args = parser.parse_args(_expand_url_tokens(argv or sys.argv[1:]))
 
     target = _choose_target(args)
