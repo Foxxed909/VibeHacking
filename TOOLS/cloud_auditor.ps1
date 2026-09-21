@@ -9,13 +9,27 @@ Write-Output " CLOUD AUDITOR - PowerShell Mode"
 Write-Output "================================"
 Write-Output "[*] Auditing: $baseUrl`n"
 
+# Baseline: request a path that cannot exist. If it answers 200 the target
+# serves a catch-all route and "200 = accessible without auth" proves nothing.
+$catchAll = $false
+try {
+    $null = Invoke-WebRequest -Uri "$($baseUrl.TrimEnd('/'))/vibe-baseline-does-not-exist" -Method Get -UseBasicParsing -TimeoutSec 3
+    $catchAll = $true
+    Write-Output "[!] Target answers 200 for a nonexistent path (catch-all route)."
+    Write-Output "    Results below are unverified status-only signals.`n"
+} catch {
+    Write-Output "[*] Baseline: nonexistent path correctly refused.`n"
+}
+
 foreach ($t in $targets) {
     $url = "$($baseUrl.TrimEnd('/'))/$t"
     Write-Output "-> Probing: /$t"
     try {
         $res = Invoke-WebRequest -Uri $url -Method Get -UseBasicParsing -TimeoutSec 3
-        if ($res.StatusCode -eq 200) {
+        if ($res.StatusCode -eq 200 -and -not $catchAll) {
             Write-Output "   [CRITICAL] Logic Flaw — /$t accessible without auth (200 OK)"
+        } elseif ($res.StatusCode -eq 200) {
+            Write-Output "   [INFO] /$t returned 200, but the catch-all baseline did too — not confirmed"
         }
     } catch {
         $code = $_.Exception.Response.StatusCode

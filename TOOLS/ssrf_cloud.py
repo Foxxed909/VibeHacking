@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 URL_PARAM_NAMES = ("url", "uri", "target", "dest", "destination", "redirect", "next",
@@ -113,7 +113,7 @@ def main(argv=None):
     p.add_argument("--param", default="", help="Param to inject (default: autodetect a url-like param)")
     p.add_argument("--self", dest="self_origin", default="",
                    help="Your target's own origin, to add a same-host internal canary (e.g. http://127.0.0.1:9200)")
-    p.add_argument("-v", "--version", action="version", version="SSRF Cloud 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"SSRF Cloud {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return SSRFCloud(args.url).run(args.param, args.self_origin)
 

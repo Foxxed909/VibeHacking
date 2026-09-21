@@ -4,17 +4,16 @@
 Also used by `python -m vb.cli attack ...` so the internal arsenal is one command.
 """
 import argparse
-import ipaddress
 import os
 import subprocess
 import sys
-import urllib.parse
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(ROOT, "TOOLS")
 sys.path.insert(0, TOOLS)
 
 from privacy_guard import sanitize_text  # noqa: E402
+from vibe_core import is_local_or_private, normalize_host  # noqa: E402
 from attack_run import run_attack  # noqa: E402
 
 
@@ -50,39 +49,16 @@ def _read_version():
         return "1.0.0"
 
 
-def _normalize_host(raw):
-    host = (raw or "").strip()
-    if not host:
-        return ""
-    if "://" in host:
-        host = urllib.parse.urlparse(host).hostname or host
-    host = host.split("/")[0].strip().lower()
-    if "@" in host:
-        host = host.split("@")[-1]
-    if host.count(":") == 1:
-        host = host.split(":")[0]
-    return host
-
-
-def _is_local_or_private(host):
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        return ip.is_loopback or ip.is_private or ip.is_link_local
-    except ValueError:
-        return False
-
-
 def _read_trusted():
+    """Exact hostnames from authorized_targets.txt, parsed by the shared helper."""
     path = os.path.join(ROOT, "authorized_targets.txt")
     hosts = []
     try:
         with open(path, encoding="utf-8") as handle:
             for line in handle:
-                h = _normalize_host(line)
-                if h and h not in hosts:
-                    hosts.append(h)
+                host = normalize_host(line)
+                if host and host not in hosts:
+                    hosts.append(host)
     except OSError:
         pass
     return hosts
@@ -122,6 +98,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="VibeHacking full attack chain")
     p.add_argument("url", help="Target URL you own / are authorized to test")
     p.add_argument("--skip-load", action="store_true")
+    p.add_argument("--allow-locked", action="store_true",
+                   help="Run the locked high-impact tools in the chain (own targets only)")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--user", default="")
     p.add_argument("--pass", dest="password", default="")
@@ -131,7 +109,7 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     url = args.url
-    host = _normalize_host(url)
+    host = normalize_host(url)
     print("================================")
     print(f" VIBE HACKING ATTACK v{_read_version()}")
     print("================================")
@@ -142,6 +120,7 @@ def main(argv=None):
         "url": url,
         "host": host,
         "skip_load": bool(args.skip_load),
+        "allow_locked": bool(args.allow_locked),
         "yes": bool(args.yes),
         "user": args.user or "",
         "password": args.password or "",
@@ -154,7 +133,7 @@ def main(argv=None):
         "TOOLS_DIR": TOOLS,
         "ATTACK_PHASES": ATTACK_PHASES,
         "version": _read_version(),
-        "is_local_or_private": _is_local_or_private,
+        "is_local_or_private": is_local_or_private,
         "read_trusted": _read_trusted,
         "external_warning": _external_warning,
         "sanitize_text": sanitize_text,

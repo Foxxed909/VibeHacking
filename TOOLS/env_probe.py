@@ -82,6 +82,39 @@ KEY_PREFIXES = [
 ]
 
 
+def _payload_strings(payload):
+    """Every string inside the probe's own payload, longest first.
+
+    A reflecting server echoes individual fields (e.g. the message content),
+    not the whole body, so body-level replacement missed them.
+    """
+    if payload is None:
+        return []
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8", "replace")
+    payload = str(payload)
+    found = []
+
+    def walk(node):
+        if isinstance(node, str):
+            if len(node) >= 6:
+                found.append(node)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    try:
+        walk(json.loads(payload))
+    except ValueError:
+        pass
+    if payload:
+        found.append(payload)
+    return sorted(set(found), key=len, reverse=True)
+
+
 class EnvProbe(VibeTool):
     def __init__(self):
         super().__init__("Env Probe", "Environment Variable & Stack Trace Leakage Probe")
@@ -110,7 +143,16 @@ class EnvProbe(VibeTool):
         except Exception as ex:
             return 0, str(ex), {}
 
-    def _has_leak(self, text):
+    def _has_leak(self, text, payload=""):
+        """Look for real disclosure, ignoring the probe's own reflected payload.
+
+        Servers echo the request body into errors and JSON responses; scanning
+        that echo made the tool report its own payload as a "leak".
+        """
+        for echo in _payload_strings(payload):
+            text = text.replace(echo, "")
+            # also drop the JSON-escaped spelling of the same string
+            text = text.replace(json.dumps(echo)[1:-1], "")
         indicators = [
             r"sk-or-[A-Za-z0-9\-_]{10,}",
             r"sk-[A-Za-z0-9]{10,}",
@@ -151,7 +193,7 @@ class EnvProbe(VibeTool):
         for i, p in enumerate(VERBOSE_ERROR_PAYLOADS):
             status, resp, hdrs = self._post_raw(
                 base + p["endpoint"], p["body"], p["ct"])
-            has_leak = self._has_leak(resp)
+            has_leak = self._has_leak(resp, payload=p["body"])
             if has_leak:
                 self.log(f"  [LEAK #{i}] {p['ct']}: {resp[:400]}", "hack")
                 hits += 1
@@ -226,39 +268,51 @@ class EnvProbe(VibeTool):
         return 0
 
     def vector_diff_config(self, base):
-        """
-        Diff /api/config responses with various auth headers to find fields
-        that only appear for privileged requests — could include key fragments.
+        """Look for a debug/privileged config response that discloses secrets.
+
+        Varies query params as well as headers: the bundled practice target
+        exposes its full config (including the upstream key) for
+        `?debug=true` / `?full=true` / `?reveal` or `X-Debug: true` / `X-Admin: 1`.
         """
         self.log("=== DIFF: Config Response Privilege Escalation ===")
+        hits = 0
 
-        auth_variants = [
-            ("no auth",         {}),
-            ("X-Admin-Secret",  {"X-Admin-Secret": "admin123"}),
-            ("X-Internal",      {"X-Internal": "true", "X-Forwarded-For": "127.0.0.1"}),
-            ("localhost origin", {"Origin": "http://localhost:3456",
-                                  "X-Forwarded-For": "127.0.0.1",
-                                  "X-Real-IP": "127.0.0.1"}),
-            ("debug flag",       {"X-Debug": "1", "X-Trace": "1"}),
+        variants = [
+            ("no auth",              {},                       {}),
+            ("?debug=true",          {"debug": "true"},        {}),
+            ("?full=true",           {"full": "true"},         {}),
+            ("?reveal=1",            {"reveal": "1"},          {}),
+            ("X-Debug: true",        {},                       {"X-Debug": "true"}),
+            ("X-Admin: 1",           {},                       {"X-Admin": "1"}),
+            ("X-Admin-Secret",       {},                       {"X-Admin-Secret": "admin123"}),
         ]
 
         responses = {}
-        for label, hdrs in auth_variants:
-            _, resp, _ = self._get(base + "/api/config", hdrs)
+        for label, params, headers in variants:
+            url = base + "/api/config"
+            if params:
+                url += "?" + urllib.parse.urlencode(params)
+            _, resp, _ = self._get(url, headers)
             try:
-                responses[label] = set(json.loads(resp).keys())
+                data = json.loads(resp)
             except Exception:
-                responses[label] = set()
-            self.log(f"  [{label}] fields: {responses[label]}")
+                data = None
+            fields = set(data.keys()) if isinstance(data, dict) else set()
+            responses[label] = fields
+            self.log(f"  [{label}] fields: {fields}")
+            if isinstance(data, dict) and re.search(r"sk-[A-Za-z0-9\-_]{10,}", json.dumps(data)):
+                hits += 1
+                self.log(f"  [CONFIG KEY LEAK] '{label}' returned a key in the config "
+                         f"response: {str(data)[:300]}", "hack")
 
-        # find fields that appear only in some variants
         base_fields = responses.get("no auth", set())
         for label, fields in responses.items():
             extra = fields - base_fields
             if extra:
                 self.log(f"  [NEW FIELDS with '{label}'] {extra}", "warn")
 
-        return 0
+        return hits
+
 
     def run(self, url):
         self.banner()
@@ -269,7 +323,7 @@ class EnvProbe(VibeTool):
         total += self.vector_verbose_errors(base)
         total += self.vector_header_leak(base)
         self.vector_timing_oracle(base)
-        self.vector_diff_config(base)
+        total += self.vector_diff_config(base)
 
         self.log("================================")
         if total:

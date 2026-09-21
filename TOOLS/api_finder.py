@@ -3,7 +3,7 @@ import os
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class ApiFinder(VibeTool):
@@ -22,14 +22,21 @@ class ApiFinder(VibeTool):
 
         found = 0
 
+        baseline = self.baseline_probe(base_url)
+        if baseline.get("catch_all"):
+            self.log("Catch-all target: only responses that differ from a nonexistent-path "
+                     "baseline are reported as found.", "warn")
+
         for endpoint in endpoints:
             url = f"{base_url.rstrip('/')}/{endpoint}"
             self.log(f"Checking: {endpoint}")
 
-            status, _, _ = self.safe_request(url, method='GET')
+            status, body, _ = self.safe_request(url, method='GET')
 
-            if status == 200:
-                self.log(f"FOUND — {url}", "hack")
+            if status == 200 and self.matches_baseline(body, baseline):
+                self.log(f"{endpoint}: 200 identical to the catch-all baseline — ignored")
+            elif status == 200:
+                self.log(f"FOUND — {url} ({len(body)}b)", "hack")
                 found += 1
             elif status == 403:
                 self.log(f"Forbidden (exists but protected) — {endpoint}", "warn")
@@ -48,7 +55,7 @@ class ApiFinder(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="API Finder - Hidden Endpoint Discovery")
     parser.add_argument("--url", required=True, help="Target base URL (e.g. http://localhost:3456)")
-    parser.add_argument('-v', '--version', action='version', version='API Finder 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"API Finder {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     ApiFinder().run(args.url)

@@ -1,4 +1,4 @@
-import sys, os, argparse, urllib.request, json
+import sys, os, argparse, urllib.request, urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
@@ -27,6 +27,9 @@ class HeaderInject(VibeTool):
 
         # 2. X-Forwarded-Host / Proto for cache poisoning
         self.log("Test 2 — Cache poisoning headers...")
+        # Control: without any injected header, does the body already contain the
+        # canary? Without this, a static page mentioning "evil.com" counts as a hit.
+        _, control_body, _ = self.safe_request(base + "/api/config", method="GET")
         for hdr, val in [
             ("X-Forwarded-Host", "evil.com"),
             ("X-Forwarded-Proto", "http"),
@@ -41,9 +44,11 @@ class HeaderInject(VibeTool):
                 r = urllib.request.urlopen(req, timeout=4)
                 resp = r.read().decode()
                 self.log(f"[{r.status}] {hdr}: {val} => resp_len={len(resp)}")
-                if "evil.com" in resp:
+                if "evil.com" in resp and "evil.com" not in control_body:
                     self.log(f"[CACHE POISON HIT] {hdr} reflected in response!", "fail")
                     hits += 1
+                elif "evil.com" in resp:
+                    self.log(f"[contained] {hdr}: canary appears in the control response too")
             except Exception as ex:
                 self.log(f"[ERR] {hdr}: {str(ex)[:50]}")
 
@@ -55,8 +60,9 @@ class HeaderInject(VibeTool):
                 req = urllib.request.Request(base + "/api/chat", data=body, method="POST")
                 req.add_header("Content-Type", ct)
                 r = urllib.request.urlopen(req, timeout=8)
-                self.log(f"[{r.status}] Content-Type: {ct} — accepted")
-                hits += 1
+                # Accepting a Content-Type is not a vulnerability — the app is
+                # JSON-driven and ignores the header. Informational only.
+                self.log(f"[{r.status}] Content-Type: {ct} — accepted (informational)")
             except urllib.error.HTTPError as e:
                 self.log(f"[{e.code}] Content-Type: {ct} — rejected")
             except Exception as ex:

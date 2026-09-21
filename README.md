@@ -25,6 +25,7 @@ and occasionally, **BlackPC** doing it purely for the fun of it. 😄
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt   # stdlib-only: installs nothing, by design
+pip install anthropic             # ONLY if you want to run claude.py
 
 # 2a. (Optional) fire up the bundled practice target — a real, deliberately
 #     vulnerable app to test against. See testapp/README.md.
@@ -124,7 +125,8 @@ See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roste
 
 ## 📦 Requirements
 
-- **Python 3.8+** (tested on 3.14) — the entire toolset is **standard-library only**, so there is nothing to `pip install`.
+- **Python 3.9+** (CI runs 3.9 and 3.12; tested up to 3.14) — the toolset is **standard-library only**, so there is nothing to `pip install`.
+- **`anthropic`** *(optional)* — `pip install anthropic` is needed only by `claude.py`, the autonomous Claude-driven agent. Everything else runs without it.
 - **Go 1.20+** *(optional)* — only for `vibe.py maelstrom`, the high-rate private-target load tester.
 - **A browser-capable agent** *(optional)* — Antigravity / Playwright MCP for true browser-driven black-box testing.
 

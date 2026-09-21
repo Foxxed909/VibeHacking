@@ -60,6 +60,18 @@ def run(args, timeout=25):
         return 124, f"timeout after {timeout}s"
 
 
+def run_capture(args, timeout=30):
+    """Like run() but returns (returncode, combined stdout+stderr)."""
+    try:
+        p = subprocess.run(
+            args, cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 124, f"timeout after {timeout}s"
+
+
 def main():
     failures = []
     checks = 0
@@ -332,6 +344,80 @@ def main():
             print("[PASS] external Maelstrom cap is 9999.99 rps")
     except Exception as e:  # noqa: BLE001
         failures.append(f"Maelstrom cap check errored: {e}")
+
+    # 3f. Regression guards for the correctness fixes ------------------------
+    try:
+        import vibe_core  # noqa: E402
+
+        # Trust-list parsing must reject comment lines and wildcards.
+        checks += 1
+        bad_hosts = ["# comment", "*.vercel.app", "evil?host", ""]
+        leaked = [h for h in bad_hosts if vibe_core.normalize_host(h)]
+        if leaked:
+            failures.append(f"normalize_host accepted non-host input: {leaked}")
+        else:
+            print("[PASS] normalize_host rejects comments/wildcards/junk")
+
+        # Non-public ranges (loopback, RFC1918, CGNAT, link-local) are "local"
+        # for gating purposes; real public hosts and unclassifiable hostnames
+        # are not.
+        checks += 1
+        non_public = ["127.0.0.1", "10.1.2.3", "100.64.0.1", "169.254.1.1", "::1"]
+        public = ["example.com", "8.8.8.8", "2606:4700::1111"]
+        wrong = [h for h in non_public if not vibe_core.is_local_or_private(h)]
+        wrong += [h for h in public if vibe_core.is_local_or_private(h)]
+        if wrong:
+            failures.append(f"is_local_or_private mis-classified: {wrong}")
+        else:
+            print("[PASS] is_local_or_private classifies non-public vs public hosts")
+
+        # Locked-tool gate must be visible to the attack chain.
+        checks += 1
+        locked = vibe_core.locked_tools()
+        if not locked:
+            failures.append("locked manifest produced no locked tools")
+        else:
+            print(f"[PASS] locked manifest loaded ({len(locked)} gated tools)")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"vibe_core helper checks errored: {e}")
+
+    checks += 1
+    rc, out = run_capture([sys.executable, "vibe.py", "attack", "--help"])
+    if rc != 0 or "--allow-locked" not in out:
+        failures.append("vibe.py attack --help does not advertise --allow-locked")
+    else:
+        print("[PASS] vibe.py attack advertises --allow-locked")
+
+    checks += 1
+    try:
+        sys.path.insert(0, TOOLS)
+        import findings  # noqa: E402
+
+        hacks, crits, fails = findings.count_signals(
+            "[🔥 HACK] a\n[🔥 HACK] b\n[🔴 CRITICAL] c\n[-] FAIL d"
+        )
+        if (hacks, crits, fails) != (2, 1, 1):
+            failures.append(f"count_signals double-counts markers: {(hacks, crits, fails)}")
+        else:
+            print("[PASS] count_signals counts each marker once")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"count_signals check errored: {e}")
+
+    checks += 1
+    try:
+        sys.path.insert(0, TOOLS)
+        import traversal_sniper  # noqa: E402
+
+        api_body = '{"service": "openrouter", "version": "NovaChat 1.0.0"}'
+        env_body = "OPENROUTER_API_KEY=sk-or-v1-abcdef\nOTHER=1\n"
+        if traversal_sniper.looks_like_file_read("/api/config?file=../.env", api_body, "application/json"):
+            failures.append("traversal_sniper still treats a JSON API reply as a file read")
+        elif not traversal_sniper.looks_like_file_read("/files?path=../.env", env_body, "text/plain"):
+            failures.append("traversal_sniper missed real .env content")
+        else:
+            print("[PASS] traversal_sniper requires real file content as evidence")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"traversal evidence check errored: {e}")
 
     # 4. Tool --help sweep -------------------------------------------------
     tools = sorted(

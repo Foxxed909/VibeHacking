@@ -1,7 +1,6 @@
 import sys
 import os
 import glob
-import re
 import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,10 +33,13 @@ class LMX(VibeTool):
                 with open(file, "r", encoding="utf-8") as f:
                     content = f.read()
                     name = os.path.basename(file)
-                    crit = len(re.findall(r'🔴|CRITICAL|crit', content, re.IGNORECASE))
-                    med  = len(re.findall(r'🟡|MEDIUM|warn', content, re.IGNORECASE))
-                    low  = len(re.findall(r'🟢|LOW|pass', content, re.IGNORECASE))
-                    info = len(re.findall(r'🔵|INFO|hack', content, re.IGNORECASE))
+                    # Count the log prefixes exactly. Substring matching over
+                    # bare words ("🔴|CRITICAL|crit") counted one line several
+                    # times — e.g. "pass" matched inside "[🟢 PASS]".
+                    crit = content.count("[🔴 CRITICAL]") + content.count("[-] FAIL")
+                    med  = content.count("[🟡 WARN]")
+                    low  = content.count("[🟢 PASS]")
+                    info = content.count("[🔥 HACK]")
 
                     stats["Critical"] += crit
                     stats["Medium"]   += med

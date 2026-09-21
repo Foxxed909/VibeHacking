@@ -6,7 +6,7 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class Redirect(VibeTool):
@@ -31,13 +31,11 @@ class Redirect(VibeTool):
             target = f"{url.rstrip('/')}?{query}"
 
             try:
-                opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
                 req = urllib.request.Request(target, headers={
                     'User-Agent': 'Mozilla/5.0 VibeHacking/1.0'
                 })
 
                 redirected_to = None
-                original_open = opener.open
 
                 class TrackingHandler(urllib.request.HTTPRedirectHandler):
                     def redirect_request(self_, req, fp, code, msg, hdrs, newurl):
@@ -80,7 +78,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Redirect - Open Redirect Scanner")
     parser.add_argument("--url", required=True, help="Target base URL (e.g. http://localhost:3456/login)")
     parser.add_argument("--canary", default="https://evil.com", help="External URL to inject as redirect target")
-    parser.add_argument('-v', '--version', action='version', version='Redirect 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Redirect {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Redirect().run(args.url, args.canary)

@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, AuthHandler
+from vibe_core import VibeTool, FRAMEWORK_VERSION, AuthHandler
 from privacy_guard import privacy_user_agent
 
 
@@ -182,7 +182,7 @@ def main(argv=None):
                    help="Full /authorize URL including client_id, redirect_uri, response_type, state")
     p.add_argument("--attacker", default="",
                    help="An attacker sink URL you control, to prove token delivery")
-    p.add_argument("-v", "--version", action="version", version="OAuth Abuse 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"OAuth Abuse {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return OAuthAbuse(args.url, args.attacker).run()
 

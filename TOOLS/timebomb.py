@@ -5,7 +5,7 @@ import time
 import statistics
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class TimeBomb(VibeTool):
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--url", required=True, help="Login/auth endpoint (e.g. http://localhost:3456/api/login)")
     parser.add_argument("--rounds", type=int, default=8, help="Measurement rounds per probe (default: 8)")
     parser.add_argument("--threshold", type=float, default=150.0, help="Timing leak threshold in ms (default: 150)")
-    parser.add_argument('-v', '--version', action='version', version='TimeBomb 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"TimeBomb {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     TimeBomb().run(args.url, args.rounds, args.threshold)

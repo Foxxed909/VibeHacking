@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 # (label, payload) — 7*7 and 1337*7 so a random "49" on the page can't fool us.
@@ -91,7 +91,7 @@ def main(argv=None):
     p.add_argument("--param", default="q", help="Query/form param to inject (when not JSON)")
     p.add_argument("--field", default="", help="JSON body field to inject (POST JSON)")
     p.add_argument("--method", default="POST", choices=("GET", "POST"))
-    p.add_argument("-v", "--version", action="version", version="SSTI 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"SSTI {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return SSTI(args.url).run(args.param, args.field, args.method)
 

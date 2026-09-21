@@ -5,7 +5,7 @@ import random
 import string
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class RandomRoll(VibeTool):
@@ -13,7 +13,18 @@ class RandomRoll(VibeTool):
         super().__init__("Random Roll", "Password Policy Auditor")
 
     def _generate_password(self, length, weak=False):
-        charset = string.ascii_lowercase if weak else string.ascii_letters + string.digits + "!@#$%^&*"
+        """Weak mode = lowercase-only and 4-7 chars; strong mode = 8+ mixed.
+
+        The old code drew lengths from randint(4, 16) in *both* modes, so
+        "strong" runs could emit 4-char passwords and then report its own
+        generator as the target's broken policy.
+        """
+        if weak:
+            charset = string.ascii_lowercase
+            length = random.randint(4, 7)
+        else:
+            charset = string.ascii_letters + string.digits + "!@#$%^&*"
+            length = max(8, length)
         return ''.join(random.choice(charset) for _ in range(length))
 
     def run(self, url, username, attempts, check_weak):
@@ -24,18 +35,18 @@ class RandomRoll(VibeTool):
         total = 0
 
         for i in range(attempts):
-            pwd = self._generate_password(
-                length=random.randint(4, 16),
-                weak=check_weak
-            )
+            pwd = self._generate_password(length=8, weak=check_weak)
             payload = {"username": f"{username}_{i}", "password": pwd}
-            self.log(f"Rolling {payload['username']} with pwd: {pwd}")
+            # Never log the credential or its length class: session logs are
+            # plaintext files that outlive the run.
+            self.log(f"Rolling {payload['username']} "
+                     f"(password: {len(pwd)} chars, hidden)")
 
             status, _, _ = self.safe_request(url, method='POST', data=payload)
 
-            if status == 201:
+            if status in (200, 201):
                 if len(pwd) < 8 or pwd.isalpha():
-                    self.log(f"Weak password accepted — policy is broken", "crit")
+                    self.log("Weak password accepted — policy is broken", "crit")
                     weak_accepted += 1
                 else:
                     self.log(f"Strong account created ({status})", "pass")
@@ -45,7 +56,7 @@ class RandomRoll(VibeTool):
             elif status in (400, 403):
                 self.log(f"Weak password rejected ({status})", "pass")
             elif status == 0:
-                self.log(f"Connection issue", "fail")
+                self.log("Connection issue", "fail")
                 break
             else:
                 self.log(f"Unexpected response ({status})", "warn")
@@ -65,7 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("--user", default="vibe_test", help="Base username for test accounts")
     parser.add_argument("--attempts", type=int, default=10, help="Number of attempts")
     parser.add_argument("--check-weak", action="store_true", help="Deliberately generate weak passwords")
-    parser.add_argument('-v', '--version', action='version', version='Random Roll 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Random Roll {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     RandomRoll().run(args.url, args.user, args.attempts, args.check_weak)

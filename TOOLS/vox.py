@@ -5,7 +5,7 @@ import argparse
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class Vox(VibeTool):
@@ -45,7 +45,7 @@ class Vox(VibeTool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vox - WiFi Intruder Detector")
-    parser.add_argument('-v', '--version', action='version', version='Vox 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Vox {FRAMEWORK_VERSION}")
     parser.parse_args()
 
     Vox().run()

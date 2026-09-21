@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool, auth_headers
+from vibe_core import VibeTool, FRAMEWORK_VERSION, auth_headers
 from privacy_guard import privacy_user_agent
 
 CANDIDATE_PATHS = ("", "/mcp", "/api/mcp", "/mcp/v1", "/rpc", "/jsonrpc",
@@ -110,12 +110,13 @@ class MCPProbe(VibeTool):
             code, resp = self._rpc(path, "initialize", {
                 "protocolVersion": PROTO, "capabilities": {},
                 "clientInfo": {"name": "vh-mcp-probe", "version": "1.0"}}, authed=False)
+            # Require a genuine JSON-RPC 2.0 envelope: a bare {"error": {...}}
+            # body (e.g. a 401 from any REST endpoint) is not an MCP server.
             is_mcp = isinstance(resp, dict) and (
-                "jsonrpc" in resp or "result" in resp
-                or (isinstance(resp.get("error"), dict) and "code" in resp["error"]))
+                resp.get("jsonrpc") == "2.0" and ("result" in resp or "error" in resp)
+                or (isinstance(resp.get("result"), dict) and "serverInfo" in resp["result"]))
             if is_mcp:
-                # a JSON-RPC result OR any JSON-RPC-shaped error (incl. a 401
-                # "unauthorized") both prove an MCP endpoint lives here
+                # a JSON-RPC 2.0 initialize response proves an MCP endpoint here
                 self.endpoint = path
                 srv = (resp.get("result", {}).get("serverInfo", {}) if self._ok(resp) else {})
                 self.log(f"MCP endpoint: {self.base + (path or '/')}"
@@ -212,7 +213,7 @@ def main(argv=None):
     p.add_argument("--url", required=True, help="MCP server base URL (e.g. https://mcp.your-app.example/)")
     p.add_argument("--authed", action="store_true",
                    help="After the unauth boundary test, re-run using your captured session")
-    p.add_argument("-v", "--version", action="version", version="MCP Probe 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"MCP Probe {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
     return MCPProbe(args.url).run(args.authed)
 

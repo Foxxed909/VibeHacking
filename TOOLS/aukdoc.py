@@ -3,7 +3,7 @@ import os
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class AukDoc(VibeTool):
@@ -29,9 +29,9 @@ class AukDoc(VibeTool):
             self.log(f"Baseline: unauthenticated request blocked ({base_status}) — this IS an auth boundary. Testing bypasses.", "pass")
         elif base_status == 200:
             self.log(
-                f"Baseline: unauthenticated request returns 200 — this endpoint is PUBLIC. "
-                f"A 200 here is not a bypass. Point aukdoc at a protected endpoint "
-                f"(e.g. /api/admin) to test an actual boundary.",
+                "Baseline: unauthenticated request returns 200 — this endpoint is PUBLIC. "
+                "A 200 here is not a bypass. Point aukdoc at a protected endpoint "
+                "(e.g. /api/admin) to test an actual boundary.",
                 "info",
             )
         else:
@@ -92,7 +92,7 @@ class AukDoc(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AukDoc - Authentication Boundary Auditor")
     parser.add_argument("--url", required=True, help="Protected endpoint to test (e.g. http://localhost:3456/api/profile)")
-    parser.add_argument('-v', '--version', action='version', version='AukDoc 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"AukDoc {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     AukDoc().run(args.url)

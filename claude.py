@@ -22,7 +22,6 @@ Anthropic API. Run --dry-run to see the plan without any API call.
 """
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -302,27 +301,20 @@ class VibeBrain:
         sys.stdout.flush()
         if tool == "storm":
             dur, rate, conc = ("8", "300", "10") if intensity == "light" else ("15", "600", "20")
-            args = ["TOOLS/storm.py", "--url", self.url, "--duration", dur,
-                    "--entries-per-min", rate, "--concurrency", conc, "--timeout", "5", "--yes"]
+            # Route through vibe.py: it owns the trust list, the external rate cap
+            # and the loud confirmation banner. --yes is safe here because the
+            # caller already proved local/private or trusted + --allow-load.
+            args = [os.path.join(ROOT_DIR, "vibe.py"), "storm", self.url,
+                    "--duration", dur, "--entries-per-min", rate,
+                    "--concurrency", conc, "--timeout", "5", "--yes"]
             out, rc = self._run_script(args)
         elif tool == "vibe_api":
-            out, rc = self._run_script(["TOOLS/vibe_api.py", "--url", self.url])
-        else:  # maelstrom — go binary, run via vibe.py so its caps/gates apply
+            out, rc = self._run_script([os.path.join(TOOLS_DIR, "vibe_api.py"), "--url", self.url])
+        else:  # maelstrom — go binary, run through vibe.py so its caps/gates apply
             dur, rate, workers = ("8s", "30", "16") if intensity == "light" else ("15s", "50", "32")
-            env = os.environ.copy()
-            env.setdefault("PYTHONIOENCODING", "utf-8")
-            try:
-                proc = subprocess.run(
-                    ["go", "run", ".", "-t", self.url, "-d", dur, "-r", rate, "-w", workers],
-                    cwd=os.path.join(ROOT_DIR, "TOOLS", "maelstrom"),
-                    env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=PER_TOOL_TIMEOUT,
-                )
-                out, rc = (proc.stdout or "") + (proc.stderr or ""), proc.returncode
-            except FileNotFoundError:
-                out, rc = "[go not installed; maelstrom unavailable]", 127
-            except subprocess.TimeoutExpired:
-                out, rc = f"[maelstrom timed out after {PER_TOOL_TIMEOUT}s]", 124
+            args = [os.path.join(ROOT_DIR, "vibe.py"), "maelstrom",
+                    "-t", self.url, "-d", dur, "-r", rate, "-w", workers, "--yes"]
+            out, rc = self._run_script(args)
 
         self.tool_runs.append({"tool": tool, "rc": rc, "load": True})
         truncated = out if len(out) <= MAX_TOOL_OUTPUT else out[:MAX_TOOL_OUTPUT] + "\n[...truncated...]"
@@ -355,11 +347,8 @@ def write_report(brain, url, host, model, final_text):
     lines.append(f"- Host: {host}")
     lines.append(f"- Brain: {model}")
     lines.append(f"- Tools run: {len(brain.tool_runs)}")
-    lines.append(
-        "- Findings: "
-        + ", ".join(f"{_SEV_ICON[s]} {counts[s]} {s}" for s in SEVERITIES if counts[s])
-        or "- Findings: none"
-    )
+    breakdown = ", ".join(f"{_SEV_ICON[s]} {counts[s]} {s}" for s in SEVERITIES if counts[s])
+    lines.append(f"- Findings: {breakdown}" if breakdown else "- Findings: none")
     lines.append("")
     lines.append("## Findings")
     if not findings:
@@ -412,14 +401,11 @@ def run_brain(client, model, effort, system, tools, brain, kickoff, max_steps):
                 thinking={"type": "adaptive", "display": "summarized"},
                 output_config={"effort": effort},
             ) as stream:
-                in_thinking = False
                 for event in stream:
                     if event.type == "content_block_start":
                         if event.content_block.type == "thinking":
-                            in_thinking = True
                             print("\n  · thinking · ", end="", flush=True)
                         elif event.content_block.type == "text":
-                            in_thinking = False
                             print("\n", end="", flush=True)
                     elif event.type == "content_block_delta":
                         if event.delta.type == "thinking_delta":
@@ -473,7 +459,7 @@ def _api_error_hint(exc):
     if name == "AuthenticationError":
         print("    Check ANTHROPIC_API_KEY.")
     elif name == "NotFoundError":
-        print(f"    Model may be wrong. Try VIBE_CLAUDE_MODEL=claude-opus-4-8.")
+        print(f"    Model may be wrong. Try VIBE_CLAUDE_MODEL={DEFAULT_MODEL}.")
     elif name in ("RateLimitError", "OverloadedError"):
         print("    Rate limited / overloaded — wait and retry.")
 

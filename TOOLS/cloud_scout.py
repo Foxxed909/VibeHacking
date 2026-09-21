@@ -3,7 +3,7 @@ import os
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 # Paths that are SUPPOSED to be publicly reachable — a 200 here is expected,
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cloud Scout - Cloud Environment Prober")
     parser.add_argument("--url", required=True, help="Target base URL (e.g. http://localhost:3456)")
     parser.add_argument("--targets", nargs='+', default=DEFAULT_TARGETS, help="Paths to probe")
-    parser.add_argument('-v', '--version', action='version', version='Cloud Scout 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Cloud Scout {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     CloudScout().run(args.url, args.targets)

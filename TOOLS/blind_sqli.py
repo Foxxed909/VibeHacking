@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import privacy_user_agent
 
 # (label, TRUE-condition, FALSE-condition) — {v} is the original param value.
@@ -139,7 +139,7 @@ def main(argv=None):
     p.add_argument("--value", default="", help="Base value for the parameter (default: current/‘1’)")
     p.add_argument("--method", choices=("GET", "POST"), default="GET")
     p.add_argument("--data", default="", help="Extra fixed POST fields, e.g. 'password=x&csrf=y'")
-    p.add_argument("-v", "--version", action="version", version="Blind SQLi 1.0.0")
+    p.add_argument("-v", "--version", action="version", version=f"Blind SQLi {FRAMEWORK_VERSION}")
     args = p.parse_args(argv)
 
     value = args.value

@@ -6,7 +6,7 @@ import argparse
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 from privacy_guard import dns_probes_allowed, privacy_enabled
 
 WAF_SIGNATURES = {
@@ -171,7 +171,7 @@ class Ash(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ash - Domain Reconnaissance Agent")
     parser.add_argument("--url", required=True, help="Target URL (e.g. https://example.com)")
-    parser.add_argument("-v", "--version", action="version", version="Ash 2.0.0")
+    parser.add_argument("-v", "--version", action="version", version=f"Ash {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     Ash().run(args.url)

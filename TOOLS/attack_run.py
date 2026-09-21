@@ -8,6 +8,7 @@ import sys
 import time
 
 from findings import record_tool, summarize, write_findings_json
+from vibe_core import confirm_locked_tools, locked_tools
 
 
 def run_attack(ctx):
@@ -27,6 +28,23 @@ def run_attack(ctx):
     ATTACK_PHASES = ctx["ATTACK_PHASES"]
     findings = []
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Locked tools must not run just because they sit inside the chain: same
+    # consent step as a direct run, skipped (with a note) when not granted.
+    locked = locked_tools()
+    locked_in_chain = [t for _, tools in ATTACK_PHASES for t in tools if t in locked]
+    allowed_locked = set()
+    if locked_in_chain:
+        if ctx.get("allow_locked"):
+            allowed_locked = set(locked_in_chain)
+            print(f"[*] --allow-locked: running {len(locked_in_chain)} gated tool(s).")
+        else:
+            allowed_locked = confirm_locked_tools(
+                locked_in_chain, locked, assume_yes=False,
+                log_path=os.path.join(ctx["ROOT_DIR"], "logs", "locked_cli_access.log"))
+            if not allowed_locked:
+                print(f"[i] Skipping gated tool(s): {', '.join(locked_in_chain)}")
+                print("    Pass --allow-locked (only on a target you own) to include them.")
 
     # Phase 0: auth gate (internal edition when authcheck is present)
     authcheck = os.path.join(ctx["TOOLS_DIR"], "authcheck.py")
@@ -52,6 +70,9 @@ def run_attack(ctx):
             tool_path = os.path.join(ctx["TOOLS_DIR"], f"{tool}.py")
             if not os.path.isfile(tool_path):
                 print(f"\n[i] -> {tool} (missing on this edition, skip)")
+                continue
+            if tool in locked and tool not in allowed_locked:
+                print(f"\n[i] -> {tool} skipped (locked tool; see --allow-locked)")
                 continue
             print(f"\n[*] -> {tool}")
             sys.stdout.flush()

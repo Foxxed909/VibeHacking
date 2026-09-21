@@ -5,7 +5,7 @@ import argparse
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class VibeRecon(VibeTool):
@@ -53,7 +53,7 @@ class VibeRecon(VibeTool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vibe Recon - WiFi Environment Scout")
-    parser.add_argument('-v', '--version', action='version', version='Vibe Recon 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Vibe Recon {FRAMEWORK_VERSION}")
     parser.parse_args()
 
     VibeRecon().run()

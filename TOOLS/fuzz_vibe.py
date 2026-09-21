@@ -4,7 +4,7 @@ import argparse
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, FRAMEWORK_VERSION
 
 
 class FuzzVibe(VibeTool):
@@ -60,7 +60,7 @@ class FuzzVibe(VibeTool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fuzz Vibe - URL Parameter Fuzzer")
     parser.add_argument("--url", required=True, help="Target endpoint (e.g. http://localhost:3456/search)")
-    parser.add_argument('-v', '--version', action='version', version='Fuzz Vibe 1.0.0')
+    parser.add_argument('-v', '--version', action='version', version=f"Fuzz Vibe {FRAMEWORK_VERSION}")
     args = parser.parse_args()
 
     FuzzVibe().run(args.url)
