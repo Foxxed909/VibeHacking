@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # setup-editions.sh — set up VibeHacking as two side-by-side folders you can use
-# at the same time, sharing one git history:
+# at the same time, from one clone (`main` is a separate, squashed history):
 #
 #   external/   -> the public edition   (main branch,     ~44 tools)
-#   internal/   -> the full edition     (internal branch, ~57 tools = all + arsenal)
+#   internal/   -> the full edition     (internal branch, ~63 tools = all + arsenal)
 #
 # Usage (run in an empty folder where you want the two editions to live):
 #   bash setup-editions.sh
@@ -30,7 +30,7 @@ git -C internal worktree add ../external main
 
 cat <<'DONE'
 
-[+] Done. You now have two live editions sharing one history:
+[+] Done. Two live editions from one clone (separate histories):
 
     external/   ->  public edition   (git branch: main)
     internal/   ->  full edition     (git branch: internal)

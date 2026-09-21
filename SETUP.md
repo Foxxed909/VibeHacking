@@ -57,7 +57,8 @@ git everything     # → you're on the full edition
 ### B) Two folders at once — `external/` and `internal/` side by side
 
 If you'd rather have both editions open in separate folders simultaneously
-(they share one git history, so it's cheap), run the setup script in an **empty**
+(one clone, two worktrees — note `main` is a separate squashed history, so the two
+editions never merge into each other), run the setup script in an **empty**
 directory:
 
 ```bash
