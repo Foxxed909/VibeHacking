@@ -18,7 +18,10 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import time
 import hmac
 import urllib.parse
@@ -42,6 +45,135 @@ POC_FILE = os.environ.get("VIBE_POC_FILE") or os.path.join(LOGS_DIR, "pocs.json"
 HYPERION_JSON = os.environ.get("VIBE_HYPERION_FILE") or os.path.join(LOGS_DIR, "hyperion_last.json")
 
 _PLATFORM = VibeAgentPlatform()
+
+# Defensive-only tool bridge for trusted server-to-server callers such as the
+# standalone VibeAgent product. Deliberately excludes bypass/forging/load tools.
+REMOTE_AUDIT_TOOLS = {
+    "cloud_scout": {"script": "cloud_scout.py"},
+    "ash": {"script": "ash.py"},
+    "spider": {"script": "spider.py"},
+    "openapi_scout": {"script": "openapi_scout.py"},
+    "vibe_headers": {"script": "vibe_headers.py"},
+    "corscan": {"script": "corscan.py"},
+    "phantom": {"script": "phantom.py"},
+    "leep": {"script": "leep.py"},
+    "env_probe": {"script": "env_probe.py"},
+    "ghost": {"script": "ghost.py"},
+    "api_finder": {"script": "api_finder.py"},
+    "senoria": {"script": "senoria.py"},
+}
+_REMOTE_TOOL_TIMEOUT = 45
+_REMOTE_OUTPUT_LIMIT = 96 * 1024
+
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?im)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)[A-Z0-9_]*)"
+    r"\s*[:=]\s*([^\s,;]+)"
+)
+_CONN_SECRET_RE = re.compile(
+    r"(?im)\b(DATABASE_URL|REDIS_URL|MONGODB_URI)\s*[:=]\s*([^\s,;]+)"
+)
+_JWT_OUT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\b")
+_API_KEY_OUT_RE = re.compile(r"\b(?:sk-proj-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,})\b")
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+_AUTH_VALUE_RE = re.compile(
+    r"(?im)\b(authorization|cookie|set-cookie|x-api-key)\s*[:=]\s*[^\r\n]+"
+)
+_PEEK_RE = re.compile(r"(?im)^.*\bPeek:\s*.*$")
+
+
+def _sanitize_remote_tool_output(value):
+    text = "" if value is None else str(value)
+    text = _PEEK_RE.sub("Peek: <redacted sensitive preview>", text)
+    text = _PRIVATE_KEY_RE.sub("<private-key-redacted>", text)
+    text = _AUTH_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _CONN_SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _JWT_OUT_RE.sub("<jwt-redacted>", text)
+    text = _API_KEY_OUT_RE.sub("<api-key-redacted>", text)
+    return text[:_REMOTE_OUTPUT_LIMIT]
+
+
+def _remote_tool_command(tool_name, url, args=None):
+    spec = REMOTE_AUDIT_TOOLS.get(tool_name)
+    if not spec:
+        raise ValueError("Tool is not available through the remote audit bridge.")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), spec["script"])
+    cmd = [sys.executable, script, "--url", url]
+    args = args or {}
+    if tool_name == "spider":
+        try:
+            depth = int(args.get("depth", 1))
+        except (TypeError, ValueError):
+            depth = 1
+        cmd.extend(["--depth", str(max(1, min(depth, 2)))])
+    elif tool_name == "senoria":
+        # Keep remote secret scanning deliberately bounded.
+        cmd.extend(["--instances", "1", "--workers", "4", "--max-pages", "24", "--timeout", "6"])
+    return cmd
+
+
+def _run_remote_audit_tool(tool_name, url, args=None):
+    cmd = _remote_tool_command(tool_name, url, args=args)
+    with tempfile.TemporaryDirectory(prefix="vibehacking-remote-") as tmp:
+        logs_dir = os.path.join(tmp, "logs")
+        findings_file = os.path.join(logs_dir, "findings.jsonl")
+        env = os.environ.copy()
+        env.update(
+            {
+                "VIBE_LOG_DIR": logs_dir,
+                "VIBE_FINDINGS_FILE": findings_file,
+                "VIBE_SESSION_FILE": os.path.join(tmp, "session.json"),
+                "VIBE_SURFACE_FILE": os.path.join(tmp, "attack_surface.json"),
+                "VIBE_POC_FILE": os.path.join(tmp, "pocs.json"),
+                "VIBE_HYPERION_FILE": os.path.join(tmp, "hyperion.json"),
+            }
+        )
+        proc = subprocess.run(
+            cmd,
+            cwd=_ROOT,
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_REMOTE_TOOL_TIMEOUT,
+        )
+
+        findings = []
+        if os.path.isfile(findings_file):
+            try:
+                with open(findings_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        if len(findings) >= 50:
+                            break
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(item, dict):
+                            continue
+                        clean = {}
+                        for key, value in item.items():
+                            clean[key] = (
+                                _sanitize_remote_tool_output(value)
+                                if isinstance(value, str)
+                                else value
+                            )
+                        findings.append(clean)
+            except OSError:
+                pass
+
+    return {
+        "ok": proc.returncode == 0,
+        "tool": tool_name,
+        "url": url,
+        "returncode": proc.returncode,
+        "stdout": _sanitize_remote_tool_output(proc.stdout),
+        "stderr": _sanitize_remote_tool_output(proc.stderr),
+        "findings": findings,
+    }
 
 
 def load_dashboard_state():
@@ -761,6 +893,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "deployment_mode": "self-hosted-worker" if os.environ.get("VIBE_WORKER_TOKEN") else "self-hosted",
                     "can_launch": True,
                     "message": "Agent worker is ready.",
+                    "tool_endpoint": "/api/tools/run",
+                    "remote_tools": sorted(REMOTE_AUDIT_TOOLS),
                 },
             )
             return
@@ -791,9 +925,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self._require_worker_token():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path != "/api/threads/start":
-            self._send_json(404, {"error": "Unknown endpoint"})
-            return
 
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -809,12 +940,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             self._send_json(400, {"error": "Invalid JSON body"})
             return
+        if not isinstance(data, dict):
+            self._send_json(400, {"error": "JSON body must be an object."})
+            return
 
         url = str(data.get("url", "")).strip()
         auth = str(data.get("auth", "")).strip()
-        model = str(data.get("model", "laguna-s-2.1")).strip()
-        mode = str(data.get("mode", "VibeAgent")).strip()
-
         if not url:
             self._send_json(400, {"error": "Target App URL is required."})
             return
@@ -825,17 +956,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed_url.scheme not in ("http", "https") or not parsed_url.hostname or parsed_url.username or parsed_url.password:
             self._send_json(400, {"error": "Target URL must be a valid http:// or https:// URL without embedded credentials."})
             return
-        mode_key = mode.lower()
-        if mode_key not in ("vibeagent", "vibe", "breakagent", "break", "both"):
-            self._send_json(400, {"error": "Mode must be VibeAgent, BreakAgent, or both."})
-            return
         if not verify_authorization_phrase(auth):
             self._send_json(
                 403,
-                {
-                    "error": "Authorization gate rejected: You must type 'I AM AUTHORIZED TO TEST THIS TARGET' before launching a thread."
-                },
+                {"error": "Authorization gate rejected: valid authorization attestation required."},
             )
+            return
+
+        if path == "/api/tools/run":
+            tool_name = str(data.get("tool", "")).strip()
+            tool_args = data.get("args") if isinstance(data.get("args"), dict) else {}
+            if tool_name not in REMOTE_AUDIT_TOOLS:
+                self._send_json(400, {"error": "Tool is not available through the remote audit bridge."})
+                return
+            try:
+                result = _run_remote_audit_tool(tool_name, url, args=tool_args)
+                self._send_json(200, result)
+            except subprocess.TimeoutExpired:
+                self._send_json(504, {"error": "Remote audit tool timed out.", "tool": tool_name})
+            except Exception as exc:
+                self._send_json(500, {"error": f"Remote audit tool failed: {type(exc).__name__}", "tool": tool_name})
+            return
+
+        if path != "/api/threads/start":
+            self._send_json(404, {"error": "Unknown endpoint"})
+            return
+
+        model = str(data.get("model", "laguna-s-2.1")).strip()
+        mode = str(data.get("mode", "VibeAgent")).strip()
+        mode_key = mode.lower()
+        if mode_key not in ("vibeagent", "vibe", "breakagent", "break", "both"):
+            self._send_json(400, {"error": "Mode must be VibeAgent, BreakAgent, or both."})
             return
 
         agents = ["VibeAgent", "BreakAgent"] if mode_key == "both" else ["BreakAgent"] if mode_key in ("breakagent", "break") else ["VibeAgent"]

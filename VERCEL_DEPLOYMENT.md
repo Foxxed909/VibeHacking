@@ -60,6 +60,21 @@ into source files.
 Every run still requires a Target App URL and the existing authorization
 statement. Only test apps you own or have explicit written permission to assess.
 
+## Standalone VibeAgent remote audit bridge
+
+The persistent worker also exposes a token-protected `POST /api/tools/run`
+endpoint for the standalone VibeAgent product. `GET /api/capabilities`
+advertises the supported `remote_tools` list.
+
+This bridge is intentionally limited to bounded audit/recon tools such as
+headers, CORS, session policy, API/schema discovery, same-origin crawling and
+redacted secret-marker checks. It does **not** expose challenge-bypass,
+JWT-forging, WAF-evasion, exploit, or load/stress tools.
+
+Standalone VibeAgent should connect directly to the persistent worker origin
+using the same `VIBE_WORKER_TOKEN`; the Vercel dashboard proxy is not the tool
+execution endpoint.
+
 ## Limitations
 
 - A worker is necessary for real-time threads, scans, and durable thread history.

@@ -303,6 +303,46 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"Full Attacker & Cloud Suite check errored: {e}")
 
+    # 1j. Protected remote audit bridge stays bounded ----------------------
+    checks += 1
+    try:
+        import live_dashboard  # noqa: E402
+
+        remote_names = set(live_dashboard.REMOTE_AUDIT_TOOLS)
+        forbidden = {
+            "bot_breaker", "waf_evade", "jwt_forge", "storm", "hyperion",
+            "maelstrom", "smuggle_probe", "asymmetric_probe", "exploit_final",
+        }
+        spider_cmd = live_dashboard._remote_tool_command(
+            "spider", "https://example.com", {"depth": 99}
+        )
+        senoria_cmd = live_dashboard._remote_tool_command(
+            "senoria", "https://example.com", {}
+        )
+        scrubbed = live_dashboard._sanitize_remote_tool_output(
+            "https://example.com/api\nAPI_KEY=super-secret-value\n"
+            "Authorization: Bearer abc.def.ghi\nPeek: DB_PASSWORD=hunter2"
+        )
+        ok_remote = (
+            not (remote_names & forbidden)
+            and "vibe_headers" in remote_names
+            and "corscan" in remote_names
+            and spider_cmd[-2:] == ["--depth", "2"]
+            and "--max-pages" in senoria_cmd
+            and "super-secret-value" not in scrubbed
+            and "hunter2" not in scrubbed
+            and "https://example.com/api" in scrubbed
+        )
+        if not ok_remote:
+            failures.append(
+                f"Remote audit bridge policy failed: names={sorted(remote_names)} "
+                f"spider={spider_cmd} senoria={senoria_cmd} scrubbed={scrubbed!r}"
+            )
+        else:
+            print("[PASS] protected remote audit bridge is allowlisted, bounded & redacted")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Remote audit bridge check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [
