@@ -73,11 +73,47 @@ def _join_url(base_url, path):
     return urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
-def _request(target_url, method="GET", body=None, timeout=5):
-    headers = {
-        "User-Agent": privacy_user_agent("Storm"),
-        "Accept": "text/html,application/json,*/*",
+_CACHED_AGENT_HEADERS = None
+
+
+def _get_zero_key_attacker_headers():
+    global _CACHED_AGENT_HEADERS
+    if _CACHED_AGENT_HEADERS is not None:
+        return dict(_CACHED_AGENT_HEADERS)
+    hdrs = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-CH-UA": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
     }
+    session_path = os.environ.get("VIBE_SESSION_FILE") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibe_session.json"
+    )
+    if os.path.isfile(session_path):
+        try:
+            with open(session_path, "r", encoding="utf-8") as fh:
+                sess = json.load(fh)
+            prof = sess.get("surface", {}).get("agent_profile", {})
+            if isinstance(prof.get("headers"), dict):
+                hdrs.update(prof["headers"])
+            if isinstance(prof.get("cookies"), dict) and prof["cookies"]:
+                hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in prof["cookies"].items())
+        except Exception:
+            pass
+    _CACHED_AGENT_HEADERS = hdrs
+    return dict(hdrs)
+
+
+def _request(target_url, method="GET", body=None, timeout=5):
+    headers = _get_zero_key_attacker_headers()
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"

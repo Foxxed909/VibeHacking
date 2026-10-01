@@ -69,12 +69,12 @@ MAX_EXTERNAL_MAELSTROM_RPS = 9999.99
 # Every listed tool runs non-interactively as: python TOOLS/<stem>.py --url <target>.
 # Load/stress tools are NOT here — they run separately behind the trust + confirm gate.
 ATTACK_PHASES = [
-    ("Recon & Discovery", ["ash", "spider", "ghost", "api_finder", "cloud_scout"]),
-    ("Headers & Transport", ["vibe_headers", "corscan", "phantom", "header_inject"]),
-    ("Auth & Access Control", ["leep", "aukdoc", "axios", "random_roll"]),
+    ("Recon & Discovery", ["bot_breaker", "ash", "spider", "ghost", "api_finder", "openapi_scout", "cloud_scout"]),
+    ("Headers, Edge & Transport", ["vibe_headers", "corscan", "phantom", "header_inject", "smuggle_probe", "waf_evade"]),
+    ("Auth, Middleware & Access Control", ["nextjs_rsc_audit", "leep", "aukdoc", "jwt_forge", "axios", "random_roll"]),
     ("Injection & Input", ["authdoc", "fuzz_vibe", "biz_logic", "redirect",
                             "traversal_sniper", "ssrf_probe", "prompt_injector", "timebomb"]),
-    ("Secrets & Data Exposure", ["env_probe", "deep_extract", "key_stealer", "credit_drain"]),
+    ("Secrets, Asymmetric & Data Exposure", ["asymmetric_probe", "env_probe", "deep_extract", "key_stealer", "credit_drain"]),
 ]
 
 
@@ -220,6 +220,36 @@ def _build_multi_command(args, target, target_count):
             workers = _split_total_workers(args.workers, target_count)
         if workers:
             cmd += ["-w", str(workers)]
+        if args.method:
+            cmd += ["-m", args.method]
+        if args.timeout:
+            cmd += ["--timeout", args.timeout]
+        if args.payload:
+            cmd += ["-p", args.payload]
+        for header in args.header or []:
+            cmd += ["-H", header]
+        return cmd
+
+    if args.multi_command == "hyperion":
+        cmd = [sys.executable, os.path.join(ROOT_DIR, "vibe.py"), "hyperion", "-t", target]
+        if getattr(args, "guard", ""):
+            cmd += ["--guard", args.guard]
+        if args.duration:
+            cmd += ["-d", args.duration]
+        rate = args.rate
+        if args.rate_mode == "total":
+            rate = _split_total_rate(args.rate, target_count)
+        if rate:
+            cmd += ["-r", rate]
+        workers = args.workers
+        if args.worker_mode == "total":
+            workers = _split_total_workers(args.workers, target_count)
+        if workers:
+            cmd += ["-w", str(workers)]
+        if getattr(args, "profile", ""):
+            cmd += ["--profile", args.profile]
+        if getattr(args, "endpoints", ""):
+            cmd += ["--endpoints", args.endpoints]
         if args.method:
             cmd += ["-m", args.method]
         if args.timeout:
@@ -534,12 +564,24 @@ def run_vibe():
 
     # Command: attack — full ordered kill-chain (every audit tool, then gated load phase)
     attack_parser = subparsers.add_parser("attack", help="Run every tool in phase order against a URL")
-    attack_parser.add_argument("url", help="Target URL (e.g. https://your-app.com/)")
+    attack_parser.add_argument("url", help="Target URL (e.g. https://your-app.vercel.app/)")
     attack_parser.add_argument("--skip-load", action="store_true", help="Skip the load/stress phase entirely")
+    attack_parser.add_argument("--trust-target", action="store_true", help="Authorize this owned host in authorized_targets.txt for the load phase")
     attack_parser.add_argument("--yes", action="store_true", help="Skip the external-target confirmation for the load phase")
 
     # Command: report
     report_parser = subparsers.add_parser("report", help="Generate the LMX Executive Dashboard")
+
+    # Command: sarif
+    sarif_parser = subparsers.add_parser("sarif", help="Export SARIF 2.1.0, JUnit XML, and JSON findings for CI/CD")
+    sarif_parser.add_argument(
+        "--fail-on",
+        choices=["critical", "high", "medium", "low", "none"],
+        default="none",
+        help="Exit non-zero (1) if findings at or above this severity exist",
+    )
+    sarif_parser.add_argument("--sarif-out", default="", help="Custom output path for SARIF 2.1.0 file")
+    sarif_parser.add_argument("--junit-out", default="", help="Custom output path for JUnit XML file")
 
     # Command: privacy
     privacy_parser = subparsers.add_parser("privacy", help="Show tester privacy controls and limits")
@@ -602,6 +644,63 @@ def run_vibe():
         help="Arguments forwarded to Maelstrom, e.g. -t http://localhost:3456/ -d 10s -r 5000 -w 256",
     )
 
+    # Command: hyperion
+    hyperion_parser = subparsers.add_parser(
+        "hyperion",
+        help="Run the guarded Hyperion resilience & SLO load engine (requires --guard XXLMILLEAMEAN)",
+    )
+    hyperion_parser.add_argument(
+        "hyperion_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to Hyperion, e.g. --guard XXLMILLEAMEAN -t http://localhost:3456/ -d 10s -r 2000 --profile ramp",
+    )
+
+    # Command: bot (Bot Breaker — AI-Agent "Are You a Robot?" Solver & Evasion Engine)
+    bot_parser = subparsers.add_parser(
+        "bot",
+        help="Run Bot Breaker to solve or bypass 'Are you a robot?' / Cloudflare challenges for AI agents & zero-key testing",
+    )
+    bot_parser.add_argument("url", help="Target URL (e.g. https://your-app.vercel.app/)")
+    bot_parser.add_argument("--fetch", action="store_true", help="Output clean response body for AI agents after bypassing/solving")
+    bot_parser.add_argument("--cookie", default="", help="Optional pre-harvested clearance cookie")
+    bot_parser.add_argument("--json-out", default="", help="Optional JSON profile output path")
+
+    # Command: dashboard (Live Web Command Center)
+    dash_parser = subparsers.add_parser(
+        "dashboard",
+        help="Launch the Live Web Command Center & VibeAgent/BreakAgent UI (binds to 0.0.0.0)",
+    )
+    dash_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    dash_parser.add_argument("-p", "--port", type=int, default=8080, help="Listen port (default: 8080)")
+    dash_parser.add_argument("--dump-json", action="store_true", help="Print current dashboard state JSON and exit")
+
+    # Command: agent (VibeAgent & BreakAgent Autonomous AI Offensive Security Platform)
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Launch VibeAgent (Full Recon/Scan) or BreakAgent (App-Breaking Category) with Free OpenRouter models",
+    )
+    agent_parser.add_argument("--url", "-t", "--target", dest="url", default="", help="Target App URL (required to run)")
+    agent_parser.add_argument(
+        "--mode",
+        "--agent",
+        dest="mode",
+        choices=("vibe", "break", "both"),
+        default="both",
+        help="Agent category: 'vibe' (VibeAgent), 'break' (BreakAgent), or 'both' (default: both)",
+    )
+    agent_parser.add_argument(
+        "--model",
+        default="laguna-s-2.1",
+        help="Free OpenRouter model: laguna-s-2.1, laguna-xs-2.1, ling-3.0-flash-fin, ling-3.0-flash-sante, ling-3.0-flash",
+    )
+    agent_parser.add_argument(
+        "--auth",
+        default="",
+        help="Mandatory authorization attestation: 'I AM AUTHORIZED TO TEST THIS TARGET'",
+    )
+    agent_parser.add_argument("--list-models", action="store_true", help="List built-in Free OpenRouter models and exit")
+    agent_parser.add_argument("--list-threads", action="store_true", help="List live and completed agent threads and exit")
+
     # Command: multi
     multi_parser = subparsers.add_parser("multi", help="Run scan/attack/maelstrom across local/private targets in parallel")
     multi_sub = multi_parser.add_subparsers(dest="multi_command")
@@ -635,6 +734,27 @@ def run_vibe():
     multi_maelstrom.add_argument("--timeout", default="", help="Per-request timeout")
     multi_maelstrom.add_argument("-p", "--payload", default="", help="Optional payload file")
     multi_maelstrom.add_argument("-H", "--header", action="append", default=[], help="Custom header, e.g. 'Name: value'. Repeatable.")
+
+    multi_hyperion = multi_sub.add_parser("hyperion", help="Run guarded Hyperion against multiple local/private URLs")
+    add_multi_target_args(multi_hyperion)
+    multi_hyperion.add_argument("-g", "--guard", default="", help="Required Hyperion authorization guard code")
+    multi_hyperion.add_argument("-d", "--duration", default="", help="Test duration, e.g. 10s")
+    multi_hyperion.add_argument("-r", "--rate", default="", help="Target rate. Default rate mode splits this total across targets.")
+    multi_hyperion.add_argument("-w", "--workers", default="", help="Worker count. Default worker mode splits this total across targets.")
+    multi_hyperion.add_argument(
+        "-P",
+        "--profile",
+        default="constant",
+        choices=("constant", "ramp", "step", "spike", "sawtooth", "stress-knee"),
+        help="Load profile",
+    )
+    multi_hyperion.add_argument("--endpoints", default="", help="Comma-separated subpaths on each target")
+    multi_hyperion.add_argument("--rate-mode", choices=("total", "per-target"), default="total", help="Treat -r as total budget or per-target budget")
+    multi_hyperion.add_argument("--worker-mode", choices=("total", "per-target"), default="total", help="Treat -w as total workers or per-target workers")
+    multi_hyperion.add_argument("-m", "--method", default="", help="HTTP method")
+    multi_hyperion.add_argument("--timeout", default="", help="Per-request timeout")
+    multi_hyperion.add_argument("-p", "--payload", default="", help="Optional payload file")
+    multi_hyperion.add_argument("-H", "--header", action="append", default=[], help="Custom header, e.g. 'Name: value'. Repeatable.")
 
     # Command: trust
     trust_parser = subparsers.add_parser("trust", help="Manage the authorized load-test target allowlist")
@@ -673,10 +793,14 @@ def run_vibe():
         raw_senoria_args = argv[1:]
         args = parser.parse_args(["senoria"])
         args.senoria_args = raw_senoria_args[1:] if raw_senoria_args[:1] == ["--"] else raw_senoria_args
+    elif argv[:1] == ["hyperion"]:
+        raw_hyperion_args = argv[1:]
+        args = parser.parse_args(["hyperion"])
+        args.hyperion_args = raw_hyperion_args[1:] if raw_hyperion_args[:1] == ["--"] else raw_hyperion_args
     else:
         args = parser.parse_args(argv)
 
-    if args.command != "codex":
+    if args.command != "codex" and not (args.command == "bot" and getattr(args, "fetch", False)):
         print("================================")
         print(f" VIBE HACKING COMMAND CENTER v{VERSION}")
         print("================================")
@@ -689,31 +813,54 @@ def run_vibe():
         return _run_multi(args)
 
     if args.command == "scan":
-        print(f"[*] Starting Real-World Audit of {sanitize_text(args.url)}...")
-        
+        url = args.url.strip()
+        if "://" not in url and url:
+            first_host = _normalize_host(url)
+            url = f"{'http' if _is_local_or_private(first_host) else 'https'}://{url}"
+
+        print(f"[*] Starting Real-World Audit of {sanitize_text(url)}...")
+
         # Save current target to session
-        _write_session(args.url)
+        _write_session(url)
 
-        # Chain together multiple tools for a "Deep Scan"
+        # Chain together multiple tools for a "Deep Scan" (Zero-Credential Attacker Mode)
+        print("[*] Phase 0: AI-Agent & Zero-Key Bot-Gate Breaker (Bot Breaker)...")
+        run_tool(["TOOLS/bot_breaker.py", "--url", url])
+
         print("[*] Phase 1: Domain Recon (Ash)...")
-        run_tool(["TOOLS/ash.py", "--url", args.url])
+        run_tool(["TOOLS/ash.py", "--url", url])
 
-        print("[*] Phase 2: Header Security Audit...")
-        run_tool(["TOOLS/vibe_headers.py", "--url", args.url])
+        print("[*] Phase 2: Cloud & Edge Architecture Prober (Cloudflare / AWS / Vercel)...")
+        run_tool(["TOOLS/cloud_scout.py", "--url", url])
 
-        print("[*] Phase 3: Hidden Asset Discovery (Ghost)...")
-        run_tool(["TOOLS/ghost.py", "--url", args.url])
+        print("[*] Phase 3: Header Security Audit...")
+        run_tool(["TOOLS/vibe_headers.py", "--url", url])
 
-        print("[*] Phase 4: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", "--url", args.url])
-        
+        print("[*] Phase 4: Hidden Asset Discovery (Ghost)...")
+        run_tool(["TOOLS/ghost.py", "--url", url])
+
+        print("[*] Phase 5: Next.js / Vercel RSC & Middleware Audit (CVE-2025-29927)...")
+        run_tool(["TOOLS/nextjs_rsc_audit.py", "--url", url])
+
+        print("[*] Phase 6: Asymmetric 'Origin-Killer & Wallet-Drainer' Probe...")
+        run_tool(["TOOLS/asymmetric_probe.py", "--url", url])
+
+        print("[*] Phase 7: Logic Flow Audit (Leep)...")
+        run_tool(["TOOLS/leep.py", "--url", url])
+
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 
     elif args.command == "attack":
-        url = args.url
+        url = args.url.strip()
+        if "://" not in url and url:
+            first_host = _normalize_host(url)
+            url = f"{'http' if _is_local_or_private(first_host) else 'https'}://{url}"
         host = _normalize_host(url)
         print(f"[*] Full-spectrum attack run against {sanitize_text(url)}")
         print(f"    Target host: {host or '(unparsed)'}")
+
+        if getattr(args, "trust_target", False) and host and not _is_local_or_private(host):
+            _add_trusted(host)
 
         _write_session(url)
 
@@ -770,6 +917,8 @@ def run_vibe():
         print("=" * 60)
         print("\n[*] -> poc_gen")
         run_tool(["TOOLS/poc_gen.py", "--url", url])
+        print("\n[*] -> sarif_export (SARIF 2.1.0 & JUnit XML)")
+        run_tool(["TOOLS/sarif_export.py"])
         print("\n[*] -> lmx executive dashboard")
         run_tool(["TOOLS/lmx.py"])
         print("\n[*] -> backer (session backup)")
@@ -785,6 +934,16 @@ def run_vibe():
     elif args.command == "report":
         print("[*] Compiling Real-Time Executive Dashboard...")
         run_tool(["TOOLS/lmx.py"])
+        run_tool(["TOOLS/sarif_export.py"])
+
+    elif args.command == "sarif":
+        print("[*] Exporting Enterprise SARIF 2.1.0 & JUnit XML Reports...")
+        cmd = ["TOOLS/sarif_export.py", "--fail-on", args.fail_on]
+        if args.sarif_out:
+            cmd += ["--sarif-out", args.sarif_out]
+        if args.junit_out:
+            cmd += ["--junit-out", args.junit_out]
+        return run_tool(cmd).returncode
 
     elif args.command == "privacy":
         for line in privacy_summary_lines():
@@ -880,6 +1039,42 @@ def run_vibe():
         print("[*] Launching Maelstrom load test...")
         return run_command(["go", "run", ".", *forwarded], cwd=os.path.join("TOOLS", "maelstrom")).returncode
 
+    elif args.command == "hyperion":
+        forwarded = list(args.hyperion_args)
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        print("[*] Launching Hyperion guarded resilience & SLO engine...")
+        sys.stdout.flush()
+        return run_tool(["TOOLS/hyperion.py", *forwarded]).returncode
+
+    elif args.command == "bot":
+        cmd = ["TOOLS/bot_breaker.py", "--url", args.url]
+        if args.fetch:
+            cmd.append("--fetch")
+        if args.cookie:
+            cmd += ["--cookie", args.cookie]
+        if args.json_out:
+            cmd += ["--json-out", args.json_out]
+        return run_tool(cmd).returncode
+
+    elif args.command == "dashboard":
+        cmd = ["TOOLS/live_dashboard.py", "--host", args.host, "--port", str(args.port)]
+        if args.dump_json:
+            cmd.append("--dump-json")
+        return run_tool(cmd).returncode
+
+    elif args.command == "agent":
+        cmd = ["TOOLS/vibe_agent.py", "--mode", args.mode, "--model", args.model]
+        if args.url:
+            cmd += ["--url", args.url]
+        if args.auth:
+            cmd += ["--auth", args.auth]
+        if args.list_models:
+            cmd.append("--list-models")
+        if args.list_threads:
+            cmd.append("--list-threads")
+        return run_tool(cmd).returncode
+
     elif args.command == "trust":
         if args.trust_action == "add":
             return _add_trusted(args.host)
@@ -910,16 +1105,19 @@ def run_vibe():
         print("[*] Available Professional Toolset:")
         if os.path.exists(os.path.join(tools_dir, "maelstrom")):
             print("  -> maelstrom - Go private-target load tester")
-        for t in os.listdir(tools_dir):
-            if t.endswith(".py") and t not in {"vibe_core.py", "privacy_guard.py"}:
+        for t in sorted(os.listdir(tools_dir)):
+            if t.endswith(".py") and t not in {"vibe_core.py", "privacy_guard.py", "add_version_flags.py", "run_lmx.py"}:
                 description = ""
-                # Quick peek at first few lines for description
                 try:
-                    with open(os.path.join(tools_dir, t), 'r') as f:
-                        content = f.read(500)
-                        if "description" in content.lower():
+                    with open(os.path.join(tools_dir, t), "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read(1200)
+                        m = re.search(r'super\(\)\.__init__\([^,]+,\s*"([^"]+)"\)', content)
+                        if m:
+                            description = f" - {m.group(1)}"
+                        elif "description" in content.lower():
                             description = " - Functional Tool"
-                except: pass
+                except OSError:
+                    pass
                 print(f"  -> {t.replace('.py', '')}{description}")
 
     elif args.command == "codex":

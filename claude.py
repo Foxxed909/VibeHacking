@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(ROOT_DIR, "TOOLS")
@@ -93,6 +94,13 @@ def build_tools():
                         "type": "string",
                         "enum": AUDIT_TOOLS,
                         "description": "Which audit tool to run.",
+                    },
+                    "subpath": {
+                        "type": "string",
+                        "description": (
+                            "Optional path/query on the SAME locked target host "
+                            "(e.g. '/api/admin' or '/api/user'). Host/origin cannot be changed."
+                        ),
                     },
                     "rationale": {
                         "type": "string",
@@ -244,18 +252,30 @@ class VibeBrain:
         return out, proc.returncode
 
     # -- tool: run_audit_tool ------------------------------------------------
+    def _resolve_locked_subpath(self, subpath):
+        if not subpath:
+            return self.url
+        raw = str(subpath).strip()
+        if not raw.startswith("/"):
+            raw = "/" + raw
+        resolved = urllib.parse.urljoin(self.url, raw)
+        if vibe._normalize_host(resolved) != self.host:
+            return self.url
+        return resolved
+
     def run_audit_tool(self, inp):
         tool = inp.get("tool", "")
         if tool not in AUDIT_TOOLS:
             return f"Error: '{tool}' is not an available audit tool.", True
-        print(f"\n   ┌─ running {tool}  ({inp.get('rationale','')[:80]})")
+        target_url = self._resolve_locked_subpath(inp.get("subpath", ""))
+        print(f"\n   ┌─ running {tool} on {target_url}  ({inp.get('rationale','')[:80]})")
         sys.stdout.flush()
-        out, rc = self._run_script([os.path.join("TOOLS", f"{tool}.py"), "--url", self.url])
-        self.tool_runs.append({"tool": tool, "rc": rc})
+        out, rc = self._run_script([os.path.join("TOOLS", f"{tool}.py"), "--url", target_url])
+        self.tool_runs.append({"tool": tool, "target": target_url, "rc": rc})
         truncated = out if len(out) <= MAX_TOOL_OUTPUT else out[:MAX_TOOL_OUTPUT] + "\n[...output truncated...]"
         print(f"   └─ {tool} exited rc={rc}, {len(out)} chars captured")
         sys.stdout.flush()
-        header = f"Tool: {tool}\nExit code: {rc}\n--- output ---\n"
+        header = f"Tool: {tool}\nTarget: {target_url}\nExit code: {rc}\n--- output ---\n"
         return header + truncated, False
 
     # -- tool: record_finding ------------------------------------------------

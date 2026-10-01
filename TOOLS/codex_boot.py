@@ -31,6 +31,7 @@ def _list_tools():
 
 def run():
     parser = argparse.ArgumentParser(description="Codex Boot - Compact workspace snapshot")
+    parser.add_argument('-v', '--version', action='version', version='Codex Boot 1.0.0')
     parser.add_argument("--target", default="", help="Optional target URL or note")
     parser.add_argument("--ultra", action="store_true", help="Print the smallest useful snapshot")
     parser.add_argument("--workdir", default="", help="Switch into a specific working directory first")

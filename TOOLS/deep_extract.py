@@ -308,6 +308,7 @@ class DeepExtract(VibeTool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--version', action='version', version='Tool 1.0.0')
     parser.add_argument("--url", required=True)
     args = parser.parse_args()
     DeepExtract().run(args.url)

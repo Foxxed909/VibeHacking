@@ -10,7 +10,7 @@ or through the `vibe.py` orchestrator.
 > exact public hosts you add to `authorized_targets.txt`.
 
 Two practice targets ship with the repo so you can exercise everything below:
-- **`testapp/` (NovaChat)** — a deliberately vulnerable AI-chat app; every tool lands real findings.
+- **`testapp/app.py`:** Also exposes `/openapi.json` so `openapi_scout` can exercise full schema discovery in local testing.
 - **`/home/user/secretvault/` (SecretVault)** — a hardened, fully-encrypted vault; the honest "comes up empty" control.
 
 ---
@@ -23,9 +23,10 @@ Map the attack surface before touching it.
 | `ash` | Domain reconnaissance — DNS, TLS, tech/WAF fingerprint, public path probe |
 | `spider` | Attack-surface crawler — walks links/forms to enumerate routes |
 | `ghost` | Sensitive asset finder — hunts exposed files, backups, dotfiles |
-| `api_finder` | Hidden endpoint discovery — guesses/derives undocumented API paths |
+| `api_finder` | Hidden endpoint discovery — guesses/derives undocumented API paths (with SPA soft-404 & WAF challenge suppression) |
 | `api_check` | Single-endpoint checker — quick one-off probe of a specific route |
-| `cloud_scout` | Cloud environment prober — metadata endpoints, bucket/role hints. *Note: flags any public 200 as "unprotected" — verify before trusting* |
+| `openapi_scout` | **OpenAPI / Swagger / GraphQL / AI-Plugin schema auditor** — discovers exposed specs, feeds undocumented routes into the shared Attack-Surface Graph, and audits GraphQL introspection & batching |
+| `cloud_scout` | Cloud environment prober — classifies public vs sensitive paths |
 
 ## 📶 Availability & Health
 Watch your own app without generating stress traffic.
@@ -39,19 +40,24 @@ What the server tells the browser to do (or fails to).
 
 | Tool | Role |
 |------|------|
-| `vibe_headers` | HTTP security-policy auditor — CSP, HSTS, X-Frame-Options, etc. *Note: flags deprecated X-XSS-Protection and HSTS-on-loopback as critical — treat those as info* |
+| `vibe_headers` | HTTP security-policy auditor — CSP, HSTS, X-Frame-Options, etc. (context-aware: downgrades HSTS on HTTP and treats deprecated X-XSS-Protection as info) |
 | `corscan` | CORS misconfiguration scanner — reflected origins, credentialed wildcards |
-| `phantom` | Cookie & session-token analyzer — HttpOnly/Secure/SameSite flags |
+| `phantom` | Cookie & session-token analyzer — HttpOnly/Secure/SameSite flags, JWT `alg:none` header inspection, and HS256 weak-secret cracking |
 | `header_inject` | HTTP header injection & Host-header poisoning suite |
+| `smuggle_probe` | **HTTP protocol, verb-tampering & cache-control auditor** — detects sensitive API responses missing `Cache-Control: no-store`, HTTP TRACE/XST, and `X-HTTP-Method-Override` bypasses |
+| `bot_breaker` | **AI-Agent 'Are You a Robot?' Solver & Cloudflare/Vercel/AWS Evasion Engine** (`vibe.py bot <url> [--fetch]`) — runs an 8-strategy zero-credential solver/bypass matrix (Client-Hint personas, math/checkbox/Altcha PoW solver, XHR/JSON pivot, crawler impersonation, IP spoofing, shadow origin discovery) and shares the winning profile with all tools |
+| `waf_evade` | **Cloudflare / AWS WAF / Vercel Firewall & Rate-Limit Evasion Fuzzer** — tests 16KB oversized body padding, JSON Unicode escaping, `Content-Type` confusion, HTTP Parameter Pollution, and spoofed IP rate-limit bypasses |
 
 ## 🔐 Auth & Access Control
 Who can do what — and who shouldn't.
 
 | Tool | Role |
 |------|------|
+| `nextjs_rsc_audit` | **Next.js / Vercel Middleware Bypass (`CVE-2025-29927`), RSC & Server Actions Auditor** — tests `x-middleware-subrequest` auth bypass, React Server Components (`RSC: 1`) Flight payload leaks, `Next-Action` invocation, and `__NEXT_DATA__` / `/_next/data/<buildId>/*.json` exposure |
 | `leep` | Logic-flow / auth-bypass auditor |
-| `aukdoc` | Authentication boundary auditor. *Note: reports any 200 as a "boundary breach" — meaningless against intended-public pages; verify* |
-| `axios` | IDOR / object-ID exposure scanner |
+| `aukdoc` | Authentication boundary auditor — baseline-aware auth-bypass and privilege-escalation scanner |
+| `jwt_forge` | **Cryptographic JWT & token forgery auditor** — tests `alg:none` stripping, offline HS256/384/512 weak-secret cracking + live admin token forgery, and `kid` traversal/SQLi |
+| `axios` | IDOR / object-ID exposure scanner (path `/<id>` and query `?id=<id>` modes with soft-404 filtering) |
 | `random_roll` | Password-policy auditor — weak-password acceptance, lockout, enumeration |
 
 ## 💉 Injection & Input Attacks
@@ -79,6 +85,7 @@ Find the things that should never have left the server.
 | `deep_extract` | Focused API-key deep extraction |
 | `key_stealer` | Multi-vector API-key extraction (injection, error-based, header oracle, SSRF, config-mining). Redacts findings by default; `--show-keys` reveals raw on your own app |
 | `credit_drain` | API credit-drain / rate-limit auditor |
+| `asymmetric_probe` | **Asymmetric 'Origin-Killer & Wallet-Drainer' Amplification Auditor** — profiles 1-request-equals-50x-CPU/DB/LLM-cost bottlenecks (`/_next/image` resize abuse, GraphQL array batching, wildcard DB scan cache misses, and unauthenticated LLM wallet drain) |
 | `exploit_vault` | Generates a localStorage-exfil XSS payload (PoC for a confirmed XSS sink) |
 
 ## 🔥 Load & Stress — _localhost, private, or explicitly trusted targets only_
@@ -90,14 +97,17 @@ Capacity and rate-limit testing. Public hosts require an exact entry in
 | `storm` | Authorized-target traffic stressor (Python), with a safe `--url-check` mode |
 | `vibe_api` | JSON endpoint stressor |
 | `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`); double-gated + rate-capped |
+| `hyperion` | **Next-gen guarded resilience, multi-profile & SLO load engine** (`vibe.py hyperion --guard XXLMILLEAMEAN ...`) — dual Go HTTP/2 + Python keep-alive engine supporting `constant`/`ramp`/`step`/`spike` profiles, multi-endpoint rotation, Reservoir-sampled `p50/p90/p95/p99/p99.9` + jitter ($\sigma$), smart circuit breaker, and CI/CD SLO gates (`--slo-p95`, `--slo-err-pct`) |
 
 ## 📊 Reporting & Session
 Turn findings into receipts; manage the workspace.
 
 | Tool | Role |
 |------|------|
-| `lmx` | Executive security-dashboard generator (`vibe.py report`) |
-| `poc_gen` | Exploit proof-of-concept generator |
+| `lmx` | Executive security-dashboard generator (`vibe.py report`) with structured CWE/OWASP vulnerability register |
+| `sarif_export` | **Enterprise SARIF 2.1.0, JUnit XML & JSON exporter** (`vibe.py sarif [--fail-on critical]`) for GitHub Advanced Security & CI/CD gates |
+| `live_dashboard` | **Live Web Command Center & Cloud/Edge Telemetry UI** (`vibe.py dashboard`) — real-time browser UI for launching scans, viewing Bot Breaker profiles, and inspecting Hyperion HDR & Cloudflare/AWS/Vercel telemetry |
+| `poc_gen` | Exploit proof-of-concept generator (`xss`, `csrf`, `cors`, `clickjacking`) |
 | `backer` | Session-data backup utility |
 | `seagull` | Log-noise filter — strips info chatter, keeps warnings/criticals |
 | `void` | Environment cleaner — scrubs injected test payloads from a target DB (`vibe.py clean`) |
@@ -106,7 +116,8 @@ Turn findings into receipts; manage the workspace.
 ## 🤖 Orchestration
 | Entry | Role |
 |------|------|
-| `vibe.py scan` | Chained deep scan (ash → vibe_headers → ghost → leep) |
+| `vibe_agent` | **VibeAgent & BreakAgent Autonomous AI Platform** (`vibe.py agent`) — `pwn.ai`-inspired autonomous AI security & app-breaking platform powered by Free OpenRouter models (`Laguna S 2.1`, `Laguna XS 2.1`, `Ling 3.0 Flash Fin`, `Ling 3.0 Flash Sante`, `Ling 3.0 Flash VL`). Enforces Target App URL + `I AM AUTHORIZED TO TEST THIS TARGET` before spawning live `VibeAgent` and `BreakAgent` threads |
+| `vibe.py scan` | Chained deep scan (bot_breaker → ash → cloud_scout → vibe_headers → ghost → nextjs_rsc_audit → asymmetric_probe → leep) |
 | `vibe.py attack` | Full ordered kill-chain across all phases, then the gated load phase |
 | `vibe.py multi` | Parallel launcher: local/private by default; `multi scan/attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
 | `vibe.py trust` | Manage the `authorized_targets.txt` load-test allowlist |

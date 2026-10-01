@@ -121,6 +121,16 @@ See **[TOOLS/CATALOG.md](TOOLS/CATALOG.md)** for the full categorized tool roste
 
 ---
 
+## ☁️ Vercel Dashboard Preview
+
+The VibeAgent dashboard can be deployed as a Vercel Python function. The Vercel
+preview is read-only until you connect a protected, persistent worker; see
+[VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md) for the deployment and environment
+variable setup. The deliberately vulnerable practice app is excluded from the
+Vercel deployment.
+
+---
+
 ## 📦 Requirements
 
 - **Python 3.8+** (tested on 3.14) — the entire toolset is **standard-library only**, so there is nothing to `pip install`.

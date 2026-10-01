@@ -27,9 +27,10 @@ jobs:
           go-version: "1.20"
 
       # The toolkit is standard-library only, so there is nothing to install.
-      - name: Build the Go load tester
-        working-directory: TOOLS/maelstrom
-        run: go build ./...
+      - name: Build the Go load testers (Maelstrom & Hyperion)
+        run: |
+          (cd TOOLS/maelstrom && go build ./...)
+          (cd TOOLS/hyperion && go build ./...)
 
       - name: Run smoke tests
         run: python tests/smoke_test.py
@@ -64,9 +65,21 @@ jobs:
           python TOOLS/exploit_final.py --url http://127.0.0.1:3456/api/guestbook \
             --field text --check-url http://127.0.0.1:3456/ > xss.txt || true
           python TOOLS/key_stealer.py --url http://127.0.0.1:3456/ > keys.txt
+          python TOOLS/jwt_forge.py --url http://127.0.0.1:3456/api/admin > jwt.txt
+          python TOOLS/openapi_scout.py --url http://127.0.0.1:3456/ > openapi.txt
+          python TOOLS/smuggle_probe.py --url http://127.0.0.1:3456/ > smuggle.txt
+          python TOOLS/hyperion.py --guard XXLMILLEAMEAN -t http://127.0.0.1:3456/ \
+            --endpoints "/,/api/config" --profile ramp -d 2s -r 200 -w 8 \
+            --json-out reports/hyperion_metrics.json > hyperion.txt
+          python TOOLS/sarif_export.py > sarif.txt
 
           grep -q "MISSING: Content-Security-Policy" headers.txt
           grep -q "CONFIRMED XSS" xss.txt
           grep -q "KEY CANDIDATE" keys.txt
+          grep -q "CONFIRMED JWT BYPASS" jwt.txt
+          grep -q "EXPOSED SCHEMA" openapi.txt
+          grep -q "CACHEABLE SENSITIVE RESPONSE" smuggle.txt
+          test -f reports/hyperion_metrics.json
+          test -f reports/vibe.sarif
 
           echo "Practice-target end-to-end checks passed."

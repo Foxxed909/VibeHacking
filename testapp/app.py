@@ -173,6 +173,8 @@ def homepage():
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
     server_version = "NovaChat/1.0"
+    protocol_version = "HTTP/1.1"
+    disable_nagle_algorithm = True
 
     def _send(self, code, body, ctype="application/json", extra=None):
         if isinstance(body, (dict, list)):
@@ -213,6 +215,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/":
             return self._send(200, homepage(), "text/html")
+
+        if path == "/openapi.json":
+            return self._send(200, {
+                "openapi": "3.0.1",
+                "info": {"title": "NovaChat Internal API", "version": "1.0.0"},
+                "paths": {
+                    "/api/config": {"get": {"summary": "Config & runtime environment"}},
+                    "/api/debug": {"get": {"summary": "Unprotected debug dump"}},
+                    "/api/user": {"get": {"summary": "User lookup by id"}},
+                    "/api/admin": {"get": {"summary": "Admin secrets", "security": [{"bearerAuth": []}]}},
+                    "/api/chat": {"post": {"summary": "LLM chat endpoint"}},
+                    "/api/guestbook": {"get": {}, "post": {}},
+                },
+            })
 
         if path in ("/api/config", "/api/env", "/api/status/full", "/api/debug"):
             if self._debug_requested(qs) or path in ("/api/debug", "/api/status/full"):

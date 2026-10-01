@@ -110,6 +110,7 @@ class BizLogic(VibeTool):
 if __name__ == "__main__":
     import urllib.parse
     parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--version', action='version', version='Tool 1.0.0')
     parser.add_argument("--url", required=True)
     args = parser.parse_args()
     BizLogic().run(args.url)
