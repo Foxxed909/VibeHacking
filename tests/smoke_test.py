@@ -277,6 +277,32 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"BotBreaker unit check errored: {e}")
 
+    # 1i. Next.js RSC Audit, Asymmetric Probe, WAF Evade & Live Dashboard ---
+    checks += 1
+    try:
+        import asymmetric_probe  # noqa: E402
+        import live_dashboard  # noqa: E402
+        import nextjs_rsc_audit  # noqa: E402
+        import waf_evade  # noqa: E402
+
+        has_cve_hdr = any(
+            "x-middleware-subrequest" in h for h in nextjs_rsc_audit.MIDDLEWARE_BYPASS_HEADERS
+        )
+        dash_state = live_dashboard.collect_dashboard_state()
+        ok_suite = (
+            has_cve_hdr
+            and isinstance(dash_state, dict)
+            and "findings" in dash_state
+            and hasattr(asymmetric_probe, "AsymmetricProbe")
+            and hasattr(waf_evade, "WAFEvade")
+        )
+        if not ok_suite:
+            failures.append("Full Attacker & Cloud Suite module check failed")
+        else:
+            print("[PASS] Next.js RSC (CVE-2025-29927), Asymmetric Probe, WAF Evade & Live Dashboard ready")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Full Attacker & Cloud Suite check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [

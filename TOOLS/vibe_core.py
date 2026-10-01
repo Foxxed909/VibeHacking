@@ -63,6 +63,9 @@ DEFAULT_TOOL_TAXONOMY = {
     "openapi scout":    {"cwe": "CWE-200", "owasp": "API9:2023-Improper Inventory Management"},
     "smuggle probe":    {"cwe": "CWE-444", "owasp": "A05:2021-Security Misconfiguration"},
     "bot breaker":      {"cwe": "CWE-807", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "nextjs rsc auditor": {"cwe": "CWE-287", "owasp": "A01:2021-Broken Access Control"},
+    "asymmetric probe": {"cwe": "CWE-400", "owasp": "API4:2023-Unrestricted Resource Consumption"},
+    "waf evade":        {"cwe": "CWE-693", "owasp": "A05:2021-Security Misconfiguration"},
 }
 
 WAF_CHALLENGE_PATTERNS = (

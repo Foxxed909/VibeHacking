@@ -70,11 +70,11 @@ MAX_EXTERNAL_MAELSTROM_RPS = 9999.99
 # Load/stress tools are NOT here — they run separately behind the trust + confirm gate.
 ATTACK_PHASES = [
     ("Recon & Discovery", ["bot_breaker", "ash", "spider", "ghost", "api_finder", "openapi_scout", "cloud_scout"]),
-    ("Headers & Transport", ["vibe_headers", "corscan", "phantom", "header_inject", "smuggle_probe"]),
-    ("Auth & Access Control", ["leep", "aukdoc", "jwt_forge", "axios", "random_roll"]),
+    ("Headers, Edge & Transport", ["vibe_headers", "corscan", "phantom", "header_inject", "smuggle_probe", "waf_evade"]),
+    ("Auth, Middleware & Access Control", ["nextjs_rsc_audit", "leep", "aukdoc", "jwt_forge", "axios", "random_roll"]),
     ("Injection & Input", ["authdoc", "fuzz_vibe", "biz_logic", "redirect",
                             "traversal_sniper", "ssrf_probe", "prompt_injector", "timebomb"]),
-    ("Secrets & Data Exposure", ["env_probe", "deep_extract", "key_stealer", "credit_drain"]),
+    ("Secrets, Asymmetric & Data Exposure", ["asymmetric_probe", "env_probe", "deep_extract", "key_stealer", "credit_drain"]),
 ]
 
 
@@ -665,6 +665,15 @@ def run_vibe():
     bot_parser.add_argument("--cookie", default="", help="Optional pre-harvested clearance cookie")
     bot_parser.add_argument("--json-out", default="", help="Optional JSON profile output path")
 
+    # Command: dashboard (Live Web Command Center)
+    dash_parser = subparsers.add_parser(
+        "dashboard",
+        help="Launch the Live Web Command Center & Cloud/Edge Telemetry UI (binds to 0.0.0.0)",
+    )
+    dash_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    dash_parser.add_argument("-p", "--port", type=int, default=8080, help="Listen port (default: 8080)")
+    dash_parser.add_argument("--dump-json", action="store_true", help="Print current dashboard state JSON and exit")
+
     # Command: multi
     multi_parser = subparsers.add_parser("multi", help="Run scan/attack/maelstrom across local/private targets in parallel")
     multi_sub = multi_parser.add_subparsers(dest="multi_command")
@@ -803,7 +812,13 @@ def run_vibe():
         print("[*] Phase 4: Hidden Asset Discovery (Ghost)...")
         run_tool(["TOOLS/ghost.py", "--url", url])
 
-        print("[*] Phase 5: Logic Flow Audit (Leep)...")
+        print("[*] Phase 5: Next.js / Vercel RSC & Middleware Audit (CVE-2025-29927)...")
+        run_tool(["TOOLS/nextjs_rsc_audit.py", "--url", url])
+
+        print("[*] Phase 6: Asymmetric 'Origin-Killer & Wallet-Drainer' Probe...")
+        run_tool(["TOOLS/asymmetric_probe.py", "--url", url])
+
+        print("[*] Phase 7: Logic Flow Audit (Leep)...")
         run_tool(["TOOLS/leep.py", "--url", url])
 
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
@@ -1013,6 +1028,12 @@ def run_vibe():
             cmd += ["--cookie", args.cookie]
         if args.json_out:
             cmd += ["--json-out", args.json_out]
+        return run_tool(cmd).returncode
+
+    elif args.command == "dashboard":
+        cmd = ["TOOLS/live_dashboard.py", "--host", args.host, "--port", str(args.port)]
+        if args.dump_json:
+            cmd.append("--dump-json")
         return run_tool(cmd).returncode
 
     elif args.command == "trust":

@@ -45,12 +45,15 @@ What the server tells the browser to do (or fails to).
 | `phantom` | Cookie & session-token analyzer — HttpOnly/Secure/SameSite flags, JWT `alg:none` header inspection, and HS256 weak-secret cracking |
 | `header_inject` | HTTP header injection & Host-header poisoning suite |
 | `smuggle_probe` | **HTTP protocol, verb-tampering & cache-control auditor** — detects sensitive API responses missing `Cache-Control: no-store`, HTTP TRACE/XST, and `X-HTTP-Method-Override` bypasses |
+| `bot_breaker` | **AI-Agent 'Are You a Robot?' Solver & Cloudflare/Vercel/AWS Evasion Engine** (`vibe.py bot <url> [--fetch]`) — runs an 8-strategy zero-credential solver/bypass matrix (Client-Hint personas, math/checkbox/Altcha PoW solver, XHR/JSON pivot, crawler impersonation, IP spoofing, shadow origin discovery) and shares the winning profile with all tools |
+| `waf_evade` | **Cloudflare / AWS WAF / Vercel Firewall & Rate-Limit Evasion Fuzzer** — tests 16KB oversized body padding, JSON Unicode escaping, `Content-Type` confusion, HTTP Parameter Pollution, and spoofed IP rate-limit bypasses |
 
 ## 🔐 Auth & Access Control
 Who can do what — and who shouldn't.
 
 | Tool | Role |
 |------|------|
+| `nextjs_rsc_audit` | **Next.js / Vercel Middleware Bypass (`CVE-2025-29927`), RSC & Server Actions Auditor** — tests `x-middleware-subrequest` auth bypass, React Server Components (`RSC: 1`) Flight payload leaks, `Next-Action` invocation, and `__NEXT_DATA__` / `/_next/data/<buildId>/*.json` exposure |
 | `leep` | Logic-flow / auth-bypass auditor |
 | `aukdoc` | Authentication boundary auditor — baseline-aware auth-bypass and privilege-escalation scanner |
 | `jwt_forge` | **Cryptographic JWT & token forgery auditor** — tests `alg:none` stripping, offline HS256/384/512 weak-secret cracking + live admin token forgery, and `kid` traversal/SQLi |
@@ -82,6 +85,7 @@ Find the things that should never have left the server.
 | `deep_extract` | Focused API-key deep extraction |
 | `key_stealer` | Multi-vector API-key extraction (injection, error-based, header oracle, SSRF, config-mining). Redacts findings by default; `--show-keys` reveals raw on your own app |
 | `credit_drain` | API credit-drain / rate-limit auditor |
+| `asymmetric_probe` | **Asymmetric 'Origin-Killer & Wallet-Drainer' Amplification Auditor** — profiles 1-request-equals-50x-CPU/DB/LLM-cost bottlenecks (`/_next/image` resize abuse, GraphQL array batching, wildcard DB scan cache misses, and unauthenticated LLM wallet drain) |
 | `exploit_vault` | Generates a localStorage-exfil XSS payload (PoC for a confirmed XSS sink) |
 
 ## 🔥 Load & Stress — _localhost, private, or explicitly trusted targets only_
@@ -102,6 +106,7 @@ Turn findings into receipts; manage the workspace.
 |------|------|
 | `lmx` | Executive security-dashboard generator (`vibe.py report`) with structured CWE/OWASP vulnerability register |
 | `sarif_export` | **Enterprise SARIF 2.1.0, JUnit XML & JSON exporter** (`vibe.py sarif [--fail-on critical]`) for GitHub Advanced Security & CI/CD gates |
+| `live_dashboard` | **Live Web Command Center & Cloud/Edge Telemetry UI** (`vibe.py dashboard`) — real-time browser UI for launching scans, viewing Bot Breaker profiles, and inspecting Hyperion HDR & Cloudflare/AWS/Vercel telemetry |
 | `poc_gen` | Exploit proof-of-concept generator (`xss`, `csrf`, `cors`, `clickjacking`) |
 | `backer` | Session-data backup utility |
 | `seagull` | Log-noise filter — strips info chatter, keeps warnings/criticals |
