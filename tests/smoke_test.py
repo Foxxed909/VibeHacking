@@ -560,6 +560,13 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"Maelstrom cap check errored: {e}")
 
+    checks += 1
+    code, err = run(["tests/vercel_test.py"])
+    if code != 0:
+        failures.append(f"Vercel adapter tests exited {code}: {err.strip()[:300]}")
+    else:
+        print("[PASS] Vercel adapter: preview mode, fail-closed runs, and dashboard auth")
+
     # 4. Tool --help sweep -------------------------------------------------
     tools = sorted(
         f for f in os.listdir(TOOLS) if f.endswith(".py") and f not in SKIP_RUNTIME

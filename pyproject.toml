@@ -17,3 +17,6 @@ vibe-hack = "vb.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["vb*"]
+
+[tool.vercel]
+entrypoint = "app:app"

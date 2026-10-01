@@ -39,7 +39,7 @@ from privacy_guard import sanitize_text
 from vibe_core import VibeTool
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-THREADS_DIR = os.path.join(_ROOT, "logs", "threads")
+THREADS_DIR = os.environ.get("VIBE_THREADS_DIR") or os.path.join(_ROOT, "logs", "threads")
 
 VALID_AUTH_PHRASES = {
     "I AM AUTHORIZED TO TEST THIS TARGET",

@@ -1,0 +1,31 @@
+# Secrets and runtime artifacts must never be uploaded.
+.env
+.env.*
+**/.env
+**/.env.*
+logs/
+reports/
+backups/
+authorized_targets.txt
+vibe_session.json
+VIBE_DASHBOARD.html
+
+# Do not publish the intentionally vulnerable practice target or local tests.
+testapp/
+tests/
+
+# Keep Vercel from serving the repository's unrelated static landing pages.
+index.html
+landing.html
+popup.js
+
+# Repository metadata and local build/cache artifacts.
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.exe
+TOOLS/maelstrom/maelstrom
+TOOLS/hyperion/hyperion

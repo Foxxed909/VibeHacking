@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+import hmac
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,11 +35,11 @@ from vibe_agent import (
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOGS_DIR = os.path.join(_ROOT, "logs")
-FINDINGS_FILE = os.path.join(LOGS_DIR, "findings.jsonl")
-SURFACE_FILE = os.path.join(LOGS_DIR, "attack_surface.json")
-POC_FILE = os.path.join(LOGS_DIR, "pocs.json")
-HYPERION_JSON = os.path.join(LOGS_DIR, "hyperion_last.json")
+LOGS_DIR = os.environ.get("VIBE_LOG_DIR") or os.path.join(_ROOT, "logs")
+FINDINGS_FILE = os.environ.get("VIBE_FINDINGS_FILE") or os.path.join(LOGS_DIR, "findings.jsonl")
+SURFACE_FILE = os.environ.get("VIBE_SURFACE_FILE") or os.path.join(LOGS_DIR, "attack_surface.json")
+POC_FILE = os.environ.get("VIBE_POC_FILE") or os.path.join(LOGS_DIR, "pocs.json")
+HYPERION_JSON = os.environ.get("VIBE_HYPERION_FILE") or os.path.join(LOGS_DIR, "hyperion_last.json")
 
 _PLATFORM = VibeAgentPlatform()
 
@@ -278,6 +279,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transition: transform 0.1s ease, opacity 0.15s ease;
   }
   .btn:hover { opacity: 0.92; transform: translateY(-1px); }
+  .btn:disabled { cursor: not-allowed; opacity: 0.48; transform: none; }
   .btn-vibe { background: #0284c7; color: #fff; }
   .btn-break { background: #dc2626; color: #fff; }
   .btn-both { background: linear-gradient(90deg, #0284c7, #9333ea, #dc2626); color: #fff; }
@@ -481,9 +483,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="btn-row">
-      <button class="btn btn-vibe" onclick="startAgent('VibeAgent')">🔍 Launch VibeAgent Thread</button>
-      <button class="btn btn-break" onclick="startAgent('BreakAgent')">💥 Launch BreakAgent Thread (Break App)</button>
-      <button class="btn btn-both" onclick="startAgent('both')">⚡ Launch Both Parallel Threads (VibeAgent + BreakAgent)</button>
+      <button class="btn btn-vibe launch-button" onclick="startAgent('VibeAgent')">🔍 Launch VibeAgent Thread</button>
+      <button class="btn btn-break launch-button" onclick="startAgent('BreakAgent')">💥 Launch BreakAgent Thread (Break App)</button>
+      <button class="btn btn-both launch-button" onclick="startAgent('both')">⚡ Launch Both Parallel Threads (VibeAgent + BreakAgent)</button>
       <span id="launch-msg"></span>
     </div>
   </section>
@@ -541,9 +543,32 @@ function fillAuth() {
   document.getElementById('auth-input').value = 'I AM AUTHORIZED TO TEST THIS TARGET';
 }
 
+let agentCapabilities = {can_launch: true};
+async function loadCapabilities() {
+  try {
+    const r = await fetch('/api/capabilities', {cache: 'no-store'});
+    const d = await r.json();
+    agentCapabilities = d;
+    document.querySelectorAll('.launch-button').forEach(button => {
+      button.disabled = !d.can_launch;
+    });
+    if (!d.can_launch) {
+      const msg = document.getElementById('launch-msg');
+      msg.style.color = '#eab308';
+      msg.textContent = 'ℹ️ ' + (d.message || 'Agent runs are unavailable in this deployment.');
+    }
+  } catch (e) {}
+}
+
 async function startAgent(mode) {
   const url = document.getElementById('app-url').value.trim();
   const model = document.getElementById('model-select').value;
+  if (!agentCapabilities.can_launch) {
+    const msg = document.getElementById('launch-msg');
+    msg.style.color = '#eab308';
+    msg.textContent = 'ℹ️ ' + (agentCapabilities.message || 'Agent runs are unavailable in this deployment.');
+    return;
+  }
   const auth = document.getElementById('auth-input').value.trim();
   const msg = document.getElementById('launch-msg');
 
@@ -680,6 +705,7 @@ async function refresh() {
     `).join('') || '<tr><td colspan="4" style="color:var(--muted)">No findings recorded yet. Launch a VibeAgent or BreakAgent thread above!</td></tr>';
   } catch (e) {}
 }
+loadCapabilities();
 refresh();
 setInterval(refresh, 1500);
 </script>
@@ -694,6 +720,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
+    def _require_worker_token(self):
+        required = os.environ.get("VIBE_WORKER_TOKEN", "").strip()
+        if not required:
+            return False
+        supplied = self.headers.get("X-Vibe-Worker-Token", "")
+        if hmac.compare_digest(supplied, required):
+            return False
+        self._send_json(401, {"error": "Worker authentication required."})
+        return True
+
     def _send_json(self, code, payload):
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(code)
@@ -705,6 +741,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self):
+        if os.environ.get("VIBE_WORKER_TOKEN", "").strip():
+            self._send_json(403, {"error": "Cross-origin requests are disabled for this worker."})
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -712,7 +751,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self._require_worker_token():
+            return
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/capabilities":
+            self._send_json(
+                200,
+                {
+                    "deployment_mode": "self-hosted-worker" if os.environ.get("VIBE_WORKER_TOKEN") else "self-hosted",
+                    "can_launch": True,
+                    "message": "Agent worker is ready.",
+                },
+            )
+            return
         if path in ("/api/state", "/api/findings"):
             self._send_json(200, load_dashboard_state())
             return
@@ -737,12 +788,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self._require_worker_token():
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path != "/api/threads/start":
             self._send_json(404, {"error": "Unknown endpoint"})
             return
 
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._send_json(400, {"error": "Invalid Content-Length"})
+            return
+        if length < 0 or length > 16384:
+            self._send_json(413, {"error": "Request body exceeds the 16 KB limit."})
+            return
         raw = self.rfile.read(length).decode("utf-8", errors="ignore") if length > 0 else "{}"
         try:
             data = json.loads(raw)
@@ -758,6 +818,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not url:
             self._send_json(400, {"error": "Target App URL is required."})
             return
+        if "://" not in url:
+            host_hint = url.split("/", 1)[0].split(":", 1)[0].lower()
+            url = ("http://" if host_hint in ("localhost", "127.0.0.1", "::1") else "https://") + url
+        parsed_url = urllib.parse.urlsplit(url)
+        if parsed_url.scheme not in ("http", "https") or not parsed_url.hostname or parsed_url.username or parsed_url.password:
+            self._send_json(400, {"error": "Target URL must be a valid http:// or https:// URL without embedded credentials."})
+            return
+        mode_key = mode.lower()
+        if mode_key not in ("vibeagent", "vibe", "breakagent", "break", "both"):
+            self._send_json(400, {"error": "Mode must be VibeAgent, BreakAgent, or both."})
+            return
         if not verify_authorization_phrase(auth):
             self._send_json(
                 403,
@@ -767,7 +838,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
 
-        agents = ["VibeAgent", "BreakAgent"] if mode.lower() == "both" else [mode]
+        agents = ["VibeAgent", "BreakAgent"] if mode_key == "both" else ["BreakAgent"] if mode_key in ("breakagent", "break") else ["VibeAgent"]
         launched = []
         try:
             for ag in agents:
