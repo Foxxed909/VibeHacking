@@ -65,6 +65,30 @@ REMOTE_AUDIT_TOOLS = {
 _REMOTE_TOOL_TIMEOUT = 45
 _REMOTE_OUTPUT_LIMIT = 96 * 1024
 
+
+def _remote_allowed_hosts():
+    """Exact-host allowlist for the remote audit bridge. Wildcards are ignored."""
+    raw = os.environ.get("VIBE_WORKER_ALLOWED_HOSTS", "")
+    hosts = set()
+    for item in raw.split(","):
+        host = item.strip().lower().rstrip(".")
+        if host and "*" not in host and "/" not in host and "://" not in host:
+            hosts.add(host)
+    return hosts
+
+
+def _remote_target_allowed(url):
+    hosts = _remote_allowed_hosts()
+    if not hosts:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return bool(host and host in hosts)
+
+
 _SECRET_ASSIGN_RE = re.compile(
     r"(?im)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)[A-Z0-9_]*)"
     r"\s*[:=]\s*([^\s,;]+)"
@@ -894,7 +918,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "can_launch": True,
                     "message": "Agent worker is ready.",
                     "tool_endpoint": "/api/tools/run",
-                    "remote_tools": sorted(REMOTE_AUDIT_TOOLS),
+                    "remote_tool_bridge_configured": bool(_remote_allowed_hosts()),
+                    "remote_tools": sorted(REMOTE_AUDIT_TOOLS) if _remote_allowed_hosts() else [],
                 },
             )
             return
@@ -964,6 +989,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/tools/run":
+            if not _remote_target_allowed(url):
+                self._send_json(
+                    403,
+                    {"error": "Target hostname is not approved in VIBE_WORKER_ALLOWED_HOSTS."},
+                )
+                return
             tool_name = str(data.get("tool", "")).strip()
             tool_args = data.get("args") if isinstance(data.get("args"), dict) else {}
             if tool_name not in REMOTE_AUDIT_TOOLS:
