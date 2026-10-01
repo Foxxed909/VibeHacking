@@ -668,11 +668,38 @@ def run_vibe():
     # Command: dashboard (Live Web Command Center)
     dash_parser = subparsers.add_parser(
         "dashboard",
-        help="Launch the Live Web Command Center & Cloud/Edge Telemetry UI (binds to 0.0.0.0)",
+        help="Launch the Live Web Command Center & VibeAgent/BreakAgent UI (binds to 0.0.0.0)",
     )
     dash_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     dash_parser.add_argument("-p", "--port", type=int, default=8080, help="Listen port (default: 8080)")
     dash_parser.add_argument("--dump-json", action="store_true", help="Print current dashboard state JSON and exit")
+
+    # Command: agent (VibeAgent & BreakAgent Autonomous AI Offensive Security Platform)
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Launch VibeAgent (Full Recon/Scan) or BreakAgent (App-Breaking Category) with Free OpenRouter models",
+    )
+    agent_parser.add_argument("--url", "-t", "--target", dest="url", default="", help="Target App URL (required to run)")
+    agent_parser.add_argument(
+        "--mode",
+        "--agent",
+        dest="mode",
+        choices=("vibe", "break", "both"),
+        default="both",
+        help="Agent category: 'vibe' (VibeAgent), 'break' (BreakAgent), or 'both' (default: both)",
+    )
+    agent_parser.add_argument(
+        "--model",
+        default="laguna-s-2.1",
+        help="Free OpenRouter model: laguna-s-2.1, laguna-xs-2.1, ling-3.0-flash-fin, ling-3.0-flash-sante, ling-3.0-flash",
+    )
+    agent_parser.add_argument(
+        "--auth",
+        default="",
+        help="Mandatory authorization attestation: 'I AM AUTHORIZED TO TEST THIS TARGET'",
+    )
+    agent_parser.add_argument("--list-models", action="store_true", help="List built-in Free OpenRouter models and exit")
+    agent_parser.add_argument("--list-threads", action="store_true", help="List live and completed agent threads and exit")
 
     # Command: multi
     multi_parser = subparsers.add_parser("multi", help="Run scan/attack/maelstrom across local/private targets in parallel")
@@ -1034,6 +1061,18 @@ def run_vibe():
         cmd = ["TOOLS/live_dashboard.py", "--host", args.host, "--port", str(args.port)]
         if args.dump_json:
             cmd.append("--dump-json")
+        return run_tool(cmd).returncode
+
+    elif args.command == "agent":
+        cmd = ["TOOLS/vibe_agent.py", "--mode", args.mode, "--model", args.model]
+        if args.url:
+            cmd += ["--url", args.url]
+        if args.auth:
+            cmd += ["--auth", args.auth]
+        if args.list_models:
+            cmd.append("--list-models")
+        if args.list_threads:
+            cmd.append("--list-threads")
         return run_tool(cmd).returncode
 
     elif args.command == "trust":

@@ -116,7 +116,8 @@ Turn findings into receipts; manage the workspace.
 ## 🤖 Orchestration
 | Entry | Role |
 |------|------|
-| `vibe.py scan` | Chained deep scan (ash → vibe_headers → ghost → leep) |
+| `vibe_agent` | **VibeAgent & BreakAgent Autonomous AI Platform** (`vibe.py agent`) — `pwn.ai`-inspired autonomous AI security & app-breaking platform powered by Free OpenRouter models (`Laguna S 2.1`, `Laguna XS 2.1`, `Ling 3.0 Flash Fin`, `Ling 3.0 Flash Sante`, `Ling 3.0 Flash VL`). Enforces Target App URL + `I AM AUTHORIZED TO TEST THIS TARGET` before spawning live `VibeAgent` and `BreakAgent` threads |
+| `vibe.py scan` | Chained deep scan (bot_breaker → ash → cloud_scout → vibe_headers → ghost → nextjs_rsc_audit → asymmetric_probe → leep) |
 | `vibe.py attack` | Full ordered kill-chain across all phases, then the gated load phase |
 | `vibe.py multi` | Parallel launcher: local/private by default; `multi scan/attack --allow-external` permit authorized public audit runs, while load/stress stays local/private |
 | `vibe.py trust` | Manage the `authorized_targets.txt` load-test allowlist |

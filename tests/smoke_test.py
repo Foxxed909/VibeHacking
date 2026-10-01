@@ -490,6 +490,36 @@ def main():
         print("[PASS] python -m vb.cli allows locked tool help")
 
     checks += 1
+    code, err = run(["vibe.py", "agent", "--list-models"])
+    if code != 0:
+        failures.append(f"`python vibe.py agent --list-models` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] vibe.py agent --list-models OK")
+
+    checks += 1
+    code, err = run(["vibe.py", "agent", "--url", "http://127.0.0.1:3456", "--auth", "WRONG_PHRASE"])
+    if code == 0:
+        failures.append("vibe.py agent allowed execution without 'I AM AUTHORIZED TO TEST THIS TARGET'")
+    else:
+        print("[PASS] vibe.py agent refuses execution without mandatory authorization phrase")
+
+    checks += 1
+    try:
+        import vibe_agent  # noqa: E402
+
+        assert vibe_agent.verify_authorization_phrase("I AM AUTHORIZED TO TEST THIS TARGET")
+        assert vibe_agent.verify_authorization_phrase("I AM AUTHORIZED TO TEST THIS TARGE")
+        assert not vibe_agent.verify_authorization_phrase("unauthorized")
+        assert vibe_agent.resolve_model_spec("laguna-s-2.1")["id"] == "poolside/laguna-s-2.1:free"
+        assert vibe_agent.resolve_model_spec("laguna-xs-2.1")["id"] == "poolside/laguna-xs-2.1:free"
+        assert vibe_agent.resolve_model_spec("ling-3.0-flash-fin")["id"] == "inclusionai/ling-3.0-flash-fin:free"
+        assert vibe_agent.resolve_model_spec("ling-3.0-flash-sante")["id"] == "inclusionai/ling-3.0-flash-sante:free"
+        assert vibe_agent.resolve_model_spec("ling-3.0-flash")["id"] == "inclusionai/ling-3.0-flash-vl:free"
+        print("[PASS] VibeAgent & BreakAgent authorization gate + Free OpenRouter models OK")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"vibe_agent unit check failed: {e}")
+
+    checks += 1
     code, err = run(["vibe.py", "maelstrom", "-t", "https://example.com", "-d", "1s", "-r", "10", "-w", "1"])
     if code == 0:
         failures.append("vibe.py maelstrom allowed an untrusted public host")

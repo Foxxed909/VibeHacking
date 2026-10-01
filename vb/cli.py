@@ -15,6 +15,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 VIBE_COMMANDS = {
     "scan",
     "attack",
+    "agent",
     "bot",
     "dashboard",
     "report",
@@ -41,6 +42,7 @@ NON_RUNNABLE = {
 }
 
 MENU_ITEMS = [
+    ("VibeAgent & BreakAgent (Autonomous AI Platform)", "vibe_agent"),
     ("Deep scan", "scan"),
     ("Full ordered attack chain", "attack"),
     ("Bot Breaker ('Are you a robot?' solver)", "bot_breaker"),
