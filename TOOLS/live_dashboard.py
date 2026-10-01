@@ -66,22 +66,22 @@ _REMOTE_TOOL_TIMEOUT = 45
 _REMOTE_OUTPUT_LIMIT = 96 * 1024
 
 _SECRET_ASSIGN_RE = re.compile(
-    r"(?im)\\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)[A-Z0-9_]*)"
-    r"\\s*[:=]\\s*([^\\s,;]+)"
+    r"(?im)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)[A-Z0-9_]*)"
+    r"\s*[:=]\s*([^\s,;]+)"
 )
 _CONN_SECRET_RE = re.compile(
-    r"(?im)\\b(DATABASE_URL|REDIS_URL|MONGODB_URI)\\s*[:=]\\s*([^\\s,;]+)"
+    r"(?im)\b(DATABASE_URL|REDIS_URL|MONGODB_URI)\s*[:=]\s*([^\s,;]+)"
 )
-_JWT_OUT_RE = re.compile(r"\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*\\b")
-_API_KEY_OUT_RE = re.compile(r"\\b(?:sk-proj-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,})\\b")
+_JWT_OUT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\b")
+_API_KEY_OUT_RE = re.compile(r"\b(?:sk-proj-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,})\b")
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
     re.IGNORECASE | re.DOTALL,
 )
 _AUTH_VALUE_RE = re.compile(
-    r"(?im)\\b(authorization|cookie|set-cookie|x-api-key)\\s*[:=]\\s*[^\\r\\n]+"
+    r"(?im)\b(authorization|cookie|set-cookie|x-api-key)\s*[:=]\s*[^\r\n]+"
 )
-_PEEK_RE = re.compile(r"(?im)^.*\\bPeek:\\s*.*$")
+_PEEK_RE = re.compile(r"(?im)^.*\bPeek:\s*.*$")
 
 
 def _sanitize_remote_tool_output(value):
