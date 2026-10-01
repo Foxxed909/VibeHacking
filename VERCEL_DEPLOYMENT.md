@@ -71,6 +71,17 @@ headers, CORS, session policy, API/schema discovery, same-origin crawling and
 redacted secret-marker checks. It does **not** expose challenge-bypass,
 JWT-forging, WAF-evasion, exploit, or load/stress tools.
 
+The bridge is also fail-closed on target scope. Configure an exact-host
+allowlist on the worker itself:
+
+```bash
+export VIBE_WORKER_ALLOWED_HOSTS=app.example.com,api.example.com
+```
+
+Wildcards and subdomain expansion are not accepted. If the allowlist is empty,
+`/api/capabilities` advertises no remote audit tools and `/api/tools/run`
+rejects execution.
+
 Standalone VibeAgent should connect directly to the persistent worker origin
 using the same `VIBE_WORKER_TOKEN`; the Vercel dashboard proxy is not the tool
 execution endpoint.
