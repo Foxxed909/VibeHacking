@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import hmac
 import urllib.parse
@@ -116,14 +117,54 @@ def _remote_tool_command(tool_name, url, args=None):
 
 def _run_remote_audit_tool(tool_name, url, args=None):
     cmd = _remote_tool_command(tool_name, url, args=args)
-    proc = subprocess.run(
-        cmd,
-        cwd=_ROOT,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_REMOTE_TOOL_TIMEOUT,
-    )
+    with tempfile.TemporaryDirectory(prefix="vibehacking-remote-") as tmp:
+        logs_dir = os.path.join(tmp, "logs")
+        findings_file = os.path.join(logs_dir, "findings.jsonl")
+        env = os.environ.copy()
+        env.update(
+            {
+                "VIBE_LOG_DIR": logs_dir,
+                "VIBE_FINDINGS_FILE": findings_file,
+                "VIBE_SESSION_FILE": os.path.join(tmp, "session.json"),
+                "VIBE_SURFACE_FILE": os.path.join(tmp, "attack_surface.json"),
+                "VIBE_POC_FILE": os.path.join(tmp, "pocs.json"),
+                "VIBE_HYPERION_FILE": os.path.join(tmp, "hyperion.json"),
+            }
+        )
+        proc = subprocess.run(
+            cmd,
+            cwd=_ROOT,
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_REMOTE_TOOL_TIMEOUT,
+        )
+
+        findings = []
+        if os.path.isfile(findings_file):
+            try:
+                with open(findings_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        if len(findings) >= 50:
+                            break
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(item, dict):
+                            continue
+                        clean = {}
+                        for key, value in item.items():
+                            clean[key] = (
+                                _sanitize_remote_tool_output(value)
+                                if isinstance(value, str)
+                                else value
+                            )
+                        findings.append(clean)
+            except OSError:
+                pass
+
     return {
         "ok": proc.returncode == 0,
         "tool": tool_name,
@@ -131,6 +172,7 @@ def _run_remote_audit_tool(tool_name, url, args=None):
         "returncode": proc.returncode,
         "stdout": _sanitize_remote_tool_output(proc.stdout),
         "stderr": _sanitize_remote_tool_output(proc.stderr),
+        "findings": findings,
     }
 
 
