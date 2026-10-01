@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
 """
-hyperion.py — Next-Gen Guarded Resilience, Multi-Profile & SLO Load Engine.
+hyperion.py v2.0 — 14x Sharded Resilience, HDR Histogram & SLO Load Engine.
 
-Hyperion is VibeHacking's next-generation competitor to Maelstrom:
-  - Protected by mandatory authorization guard code (`XXLMILLEAMEAN`) + audit log
-  - Enforces strict localhost/private IP or `authorized_targets.txt` allowlist
-  - Dual Engine: delegates to Go HTTP/2 engine (`TOOLS/hyperion/main.go`) when Go
-    is installed, or runs natively via Python's `http.client` persistent keep-alive
-    connection pool (zero external dependencies)
-  - Supports `constant`, `ramp`, `step`, and `spike` load profiles
-  - Supports multi-endpoint scenario rotation (`--endpoints "/,/api/config"`)
-  - Tracks Reservoir-sampled p50 / p90 / p95 / p99 / p99.9 latency + jitter (stdev)
-  - Includes Smart Circuit Breaker + CI/CD SLO pass/fail gates (`--slo-p95`, `--slo-err-pct`)
+Hyperion v2.0 is VibeHacking's next-generation competitor to Maelstrom:
+  1. Mandatory `XXLMILLEAMEAN` constant-time cryptographic guard + audit log
+  2. Tamper-evident HMAC-SHA256 signed run receipt (`receipt_hmac`)
+  3. 14x Private-Lab Ceiling (3,500,000 RPS max private cap vs Maelstrom's 250k)
+     while strictly enforcing 9999.99 RPS / 256 workers + `authorized_targets.txt`
+     on external targets
+  4. Dual Sharded Engine: Lock-free Go HTTP/2 engine (`TOOLS/hyperion/main.go`) +
+     Lock-free Python `asyncio` raw HTTP/1.1 Keep-Alive socket-pool engine
+  5. 6 Load Profiles: `constant`, `ramp`, `step`, `spike`, `sawtooth`, `stress-knee`
+  6. Automatic Saturation Knee Detector (identifies exact RPS where latency spikes)
+  7. Weighted Multi-Endpoint Scenario Ring (`--endpoints "/:50,/api/config:30,/api/guestbook:20"`)
+  8. Dynamic Request Mutation Macros (`--cache-bust`, `{{seq}}`, `{{timestamp}}`, `{{uuid}}`)
+  9. O(1) Fixed-Memory HDR Histogram (100us resolution: p50, p75, p90, p95, p99, p99.9, p99.99 + ASCII chart)
+  10. Apdex (Application Performance Index) Score (`--apdex-t`) & Jitter (σ)
+  11. 4-Stage Progression Telemetry Table (`Q1`–`Q4` RPS, avg latency, error %)
+  12. Pre-Flight Baseline & Post-Load Recovery Slowdown Factor (`pre_ms -> post_ms`)
+  13. Rate-Limiter (`HTTP 429`) & Response Integrity Assertions (`--expect-status`, `--expect-text`)
+  14. Multi-Threshold Circuit Breaker + 5-Metric CI/CD SLO Gate (`--slo-p95`, `--slo-p99`, `--slo-err-pct`, `--slo-apdex`, `--slo-min-rps`)
 """
 import argparse
-import concurrent.futures
+import asyncio
+import hashlib
 import hmac
 import http.client
 import ipaddress
 import json
 import math
 import os
-import random
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
-import threading
 import time
 import urllib.parse
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from privacy_guard import privacy_user_agent, sanitize_text
@@ -39,8 +48,10 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUARD_CODE = "XXLMILLEAMEAN"
 MAX_EXTERNAL_RPS = 9999.99
 MAX_EXTERNAL_WORKERS = 256
-MAX_PRIVATE_RPS = 250000.0
-RESERVOIR_CAP = 250_000
+# 14x Maelstrom's 250,000 RPS private lab cap (3,500,000 RPS)
+MAX_PRIVATE_RPS = 3_500_000.0
+HIST_BUCKETS = 60_000
+HIST_STEP_MS = 0.1  # 100 microsecond (0.1ms) bucket resolution up to 6,000ms
 LOCAL_LITERALS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -170,7 +181,7 @@ def _effective_rate(base_rate, profile, progress):
     p = max(0.0, min(1.0, progress))
     if profile == "ramp":
         return base_rate * (0.10 + 0.90 * p)
-    if profile == "step":
+    if profile in ("step", "stress-knee"):
         if p < 0.25:
             return base_rate * 0.25
         if p < 0.50:
@@ -179,36 +190,141 @@ def _effective_rate(base_rate, profile, progress):
             return base_rate * 0.75
         return base_rate
     if profile == "spike":
-        return base_rate if 0.40 <= p <= 0.65 else base_rate * 0.25
+        return base_rate if 0.40 <= p <= 0.65 else base_rate * 0.20
+    if profile == "sawtooth":
+        wave = (p * 4.0) % 1.0
+        return base_rate * (0.20 + 0.80 * wave)
     return base_rate
 
 
-def _percentile(sorted_vals, pct):
-    if not sorted_vals:
-        return 0.0
-    idx = min(len(sorted_vals) - 1, max(0, int(math.ceil((pct / 100.0) * len(sorted_vals))) - 1))
-    return sorted_vals[idx]
+class _WorkerShard:
+    """Lock-free per-worker metrics shard — zero lock contention during the hot loop."""
+
+    __slots__ = (
+        "hist",
+        "overflow",
+        "count",
+        "s2xx",
+        "s3xx",
+        "s4xx",
+        "s429",
+        "s5xx",
+        "sother",
+        "errors",
+        "assert_fails",
+        "bytes_read",
+        "sum_ms",
+        "sum_sq_ms",
+        "min_ms",
+        "max_ms",
+        "apdex_sat",
+        "apdex_tol",
+        "stage_counts",
+        "stage_sum_ms",
+        "stage_5xx_err",
+    )
+
+    def __init__(self):
+        self.hist = {}
+        self.overflow = 0
+        self.count = 0
+        self.s2xx = 0
+        self.s3xx = 0
+        self.s4xx = 0
+        self.s429 = 0
+        self.s5xx = 0
+        self.sother = 0
+        self.errors = 0
+        self.assert_fails = 0
+        self.bytes_read = 0
+        self.sum_ms = 0.0
+        self.sum_sq_ms = 0.0
+        self.min_ms = 0.0
+        self.max_ms = 0.0
+        self.apdex_sat = 0
+        self.apdex_tol = 0
+        self.stage_counts = [0, 0, 0, 0]
+        self.stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
+        self.stage_5xx_err = [0, 0, 0, 0]
+
+    def record(self, status, lat_ms, nbytes, err_flag, assert_ok, stage_idx, apdex_t):
+        self.count += 1
+        self.bytes_read += nbytes
+        self.sum_ms += lat_ms
+        self.sum_sq_ms += lat_ms * lat_ms
+        if self.count == 1 or lat_ms < self.min_ms:
+            self.min_ms = lat_ms
+        if lat_ms > self.max_ms:
+            self.max_ms = lat_ms
+
+        b = int(lat_ms / HIST_STEP_MS)
+        if b < 0:
+            b = 0
+        if b < HIST_BUCKETS:
+            self.hist[b] = self.hist.get(b, 0) + 1
+        else:
+            self.overflow += 1
+
+        self.stage_counts[stage_idx] += 1
+        self.stage_sum_ms[stage_idx] += lat_ms
+
+        if not assert_ok:
+            self.assert_fails += 1
+
+        if err_flag or status == 0:
+            self.errors += 1
+            self.stage_5xx_err[stage_idx] += 1
+        elif 200 <= status < 300:
+            self.s2xx += 1
+            if lat_ms <= apdex_t:
+                self.apdex_sat += 1
+            elif lat_ms <= apdex_t * 4.0:
+                self.apdex_tol += 1
+        elif 300 <= status < 400:
+            self.s3xx += 1
+            if lat_ms <= apdex_t:
+                self.apdex_sat += 1
+            elif lat_ms <= apdex_t * 4.0:
+                self.apdex_tol += 1
+        elif status == 429:
+            self.s4xx += 1
+            self.s429 += 1
+        elif 400 <= status < 500:
+            self.s4xx += 1
+        elif 500 <= status < 600:
+            self.s5xx += 1
+            self.stage_5xx_err[stage_idx] += 1
+        else:
+            self.sother += 1
 
 
 class Hyperion(VibeTool):
     def __init__(self):
-        super().__init__("Hyperion", "Next-Gen Guarded Resilience, Multi-Profile & SLO Load Engine")
+        super().__init__("Hyperion", "14x Sharded Resilience, HDR Histogram & SLO Load Engine")
         self._tls_ctx = ssl.create_default_context()
-        self._thread_local = threading.local()
 
-    def _build_scenario_paths(self, base_url, endpoints_csv):
+    @staticmethod
+    def _build_weighted_ring(base_url, endpoints_csv):
         parsed = urllib.parse.urlsplit(base_url)
         base_path = parsed.path or "/"
         if parsed.query:
             base_path = f"{base_path}?{parsed.query}"
         if not endpoints_csv:
-            return [base_path]
+            return [base_path], [{"path": base_path, "weight": 1}]
 
-        paths = []
-        for raw in endpoints_csv.split(","):
-            sub = raw.strip()
-            if not sub:
+        ring = []
+        specs = []
+        for item in endpoints_csv.split(","):
+            raw = item.strip()
+            if not raw:
                 continue
+            weight = 1
+            sub = raw
+            if ":" in raw and not raw.startswith(("http://", "https://")):
+                prefix, maybe_w = raw.rsplit(":", 1)
+                if maybe_w.isdigit() and 1 <= int(maybe_w) <= 100:
+                    weight = int(maybe_w)
+                    sub = prefix
             if "://" in sub:
                 u = urllib.parse.urlsplit(sub)
                 if u.netloc.lower() != parsed.netloc.lower():
@@ -216,56 +332,301 @@ class Hyperion(VibeTool):
                 p = u.path or "/"
                 if u.query:
                     p = f"{p}?{u.query}"
-                paths.append(p)
-            else:
-                if not sub.startswith("/"):
-                    sub = "/" + sub
-                paths.append(sub)
-        return paths or [base_path]
+                sub = p
+            elif not sub.startswith("/"):
+                sub = "/" + sub
+            specs.append({"path": sub, "weight": weight})
+            ring.extend([sub] * weight)
 
-    def _get_connection(self, scheme, host, port, timeout):
-        conn = getattr(self._thread_local, "conn", None)
-        conn_key = getattr(self._thread_local, "conn_key", None)
-        target_key = (scheme, host, port, timeout)
-        if conn is not None and conn_key == target_key:
-            return conn
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        if scheme == "https":
-            conn = http.client.HTTPSConnection(host, port or 443, timeout=timeout, context=self._tls_ctx)
-        else:
-            conn = http.client.HTTPConnection(host, port or 80, timeout=timeout)
-        self._thread_local.conn = conn
-        self._thread_local.conn_key = target_key
-        return conn
+        if not ring:
+            ring = [base_path]
+            specs = [{"path": base_path, "weight": 1}]
+        return ring, specs
 
-    def _reset_connection(self):
-        conn = getattr(self._thread_local, "conn", None)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        self._thread_local.conn = None
-
-    def _fire_once(self, scheme, host, port, path, method, body_bytes, req_headers, timeout):
+    def _probe_single_sync(self, scheme, host, port, path, method, headers_dict, timeout):
         t0 = time.perf_counter()
-        for attempt in range(2):
-            conn = self._get_connection(scheme, host, port, timeout)
+        conn = None
+        try:
+            if scheme == "https":
+                conn = http.client.HTTPSConnection(host, port or 443, timeout=timeout, context=self._tls_ctx)
+            else:
+                conn = http.client.HTTPConnection(host, port or 80, timeout=timeout)
+            conn.request(method, path, headers=headers_dict)
+            resp = conn.getresponse()
+            resp.read()
+            return resp.status, (time.perf_counter() - t0) * 1000.0
+        except Exception:
+            return 0, (time.perf_counter() - t0) * 1000.0
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    async def _run_async_coro(
+        self,
+        scheme,
+        host,
+        port,
+        ring_paths,
+        profile,
+        method,
+        rate,
+        duration,
+        workers,
+        payload_template,
+        req_headers,
+        timeout,
+        cache_bust,
+        expect_status,
+        expect_text,
+        apdex_t,
+        circuit_breaker,
+        abort_5xx_pct,
+    ):
+        shards = [_WorkerShard() for _ in range(workers)]
+        stop_flag = False
+        tripped = False
+        has_macros = payload_template is not None and (b"{{" in payload_template)
+        expect_bytes = expect_text.encode("utf-8") if expect_text else b""
+        host_header = f"{host}:{port}" if port else host
+
+        # Pre-build raw HTTP/1.1 request frames for the fast path (when no dynamic macros/cache-bust)
+        extra_hdr_lines = "".join(
+            f"{k}: {v}\r\n"
+            for k, v in req_headers.items()
+            if k.lower() not in ("host", "connection", "content-length")
+        )
+        body_len = len(payload_template) if payload_template else 0
+        static_frames = {}
+        for p in set(ring_paths):
+            head = (
+                f"{method} {p} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                f"Connection: keep-alive\r\n"
+                f"{extra_hdr_lines}"
+            )
+            if body_len > 0:
+                head += f"Content-Length: {body_len}\r\n\r\n"
+                static_frames[p] = head.encode("latin-1", errors="ignore") + payload_template
+            else:
+                head += "\r\n"
+                static_frames[p] = head.encode("latin-1", errors="ignore")
+
+        started = time.perf_counter()
+        deadline = started + duration
+        worker_base_rate = (rate / float(workers)) if rate > 0 else 0.0
+        global_seq = 0
+
+        async def open_stream():
+            r, w = await asyncio.wait_for(
+                asyncio.open_connection(
+                    host,
+                    port or (443 if scheme == "https" else 80),
+                    ssl=self._tls_ctx if scheme == "https" else None,
+                ),
+                timeout=timeout,
+            )
+            sock = w.get_extra_info("socket")
+            if sock is not None:
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
+            return r, w
+
+        async def read_http_response(reader):
+            status_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            if not status_line:
+                raise ConnectionError("eof")
+            parts = status_line.split(b" ", 2)
+            status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+            content_length = None
+            chunked = False
+            conn_close = b"HTTP/1.0" in status_line
+
+            while True:
+                hline = await asyncio.wait_for(reader.readline(), timeout=timeout)
+                if not hline or hline in (b"\r\n", b"\n"):
+                    break
+                lower_h = hline.lower()
+                if lower_h.startswith(b"content-length:"):
+                    try:
+                        content_length = int(lower_h.split(b":", 1)[1].strip())
+                    except ValueError:
+                        content_length = 0
+                elif lower_h.startswith(b"transfer-encoding:") and b"chunked" in lower_h:
+                    chunked = True
+                elif lower_h.startswith(b"connection:") and b"close" in lower_h:
+                    conn_close = True
+
+            body_sample = b""
+            nbytes = 0
+            if method == "HEAD" or status_code in (204, 304) or (100 <= status_code < 200):
+                pass
+            elif content_length is not None:
+                if content_length > 0:
+                    data = await asyncio.wait_for(reader.readexactly(content_length), timeout=timeout)
+                    nbytes = len(data)
+                    if expect_bytes:
+                        body_sample = data
+            elif chunked:
+                chunks = []
+                while True:
+                    sz_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+                    if not sz_line:
+                        break
+                    sz_str = sz_line.split(b";", 1)[0].strip()
+                    sz = int(sz_str, 16) if sz_str else 0
+                    if sz == 0:
+                        await asyncio.wait_for(reader.readline(), timeout=timeout)
+                        break
+                    chunk_data = await asyncio.wait_for(reader.readexactly(sz + 2), timeout=timeout)
+                    nbytes += sz
+                    if expect_bytes and len(chunks) < 4:
+                        chunks.append(chunk_data[:-2])
+                if expect_bytes:
+                    body_sample = b"".join(chunks)
+            else:
+                data = await asyncio.wait_for(reader.read(65536), timeout=timeout)
+                nbytes = len(data)
+                if expect_bytes:
+                    body_sample = data
+                conn_close = True
+
+            return status_code, nbytes, body_sample, conn_close
+
+        async def worker_task(w_id, shard):
+            nonlocal stop_flag, tripped, global_seq
+            reader = writer = None
+            local_seq = w_id
+            next_slot = time.perf_counter()
+
             try:
-                conn.request(method, path, body=body_bytes, headers=req_headers)
-                resp = conn.getresponse()
-                data = resp.read()
-                status = resp.status
-                return status, (time.perf_counter() - t0) * 1000.0, len(data), ""
-            except Exception as exc:
-                self._reset_connection()
-                if attempt == 1:
-                    return 0, (time.perf_counter() - t0) * 1000.0, 0, str(exc)
-        return 0, (time.perf_counter() - t0) * 1000.0, 0, "request_failed"
+                while not stop_flag:
+                    now = time.perf_counter()
+                    if now >= deadline:
+                        break
+                    progress = (now - started) / max(duration, 0.001)
+                    stage_idx = min(3, max(0, int(progress * 4.0)))
+
+                    if worker_base_rate > 0:
+                        eff_w_rate = _effective_rate(worker_base_rate, profile, progress)
+                        if eff_w_rate > 0.1:
+                            interval = 1.0 / eff_w_rate
+                            if now < next_slot:
+                                sleep_for = min(next_slot - now, max(0.0, deadline - now))
+                                if sleep_for > 0.0005:
+                                    await asyncio.sleep(sleep_for)
+                            next_slot = max(time.perf_counter() - 0.02, next_slot + interval)
+
+                    global_seq += 1
+                    seq = global_seq
+                    path = ring_paths[local_seq % len(ring_paths)]
+                    local_seq += workers
+
+                    if not cache_bust and not has_macros:
+                        frame = static_frames[path]
+                    else:
+                        req_path = f"{path}{'&' if '?' in path else '?'}_cb={seq}" if cache_bust else path
+                        body_b = payload_template or b""
+                        if has_macros and body_b:
+                            text_b = body_b.decode("utf-8", errors="ignore")
+                            text_b = (
+                                text_b.replace("{{seq}}", str(seq))
+                                .replace("{{timestamp}}", str(int(time.time() * 1000)))
+                                .replace("{{uuid}}", uuid.uuid4().hex[:12])
+                            )
+                            body_b = text_b.encode("utf-8")
+                        head = (
+                            f"{method} {req_path} HTTP/1.1\r\n"
+                            f"Host: {host_header}\r\n"
+                            f"Connection: keep-alive\r\n"
+                            f"{extra_hdr_lines}"
+                        )
+                        if cache_bust:
+                            head += f"X-Request-Sequence: {seq}\r\n"
+                        if body_b:
+                            head += f"Content-Length: {len(body_b)}\r\n\r\n"
+                            frame = head.encode("latin-1", errors="ignore") + body_b
+                        else:
+                            head += "\r\n"
+                            frame = head.encode("latin-1", errors="ignore")
+
+                    t0 = time.perf_counter()
+                    status_code = 0
+                    nbytes = 0
+                    err_flag = False
+                    assert_ok = True
+
+                    for attempt in range(2):
+                        try:
+                            if writer is None:
+                                reader, writer = await open_stream()
+                            writer.write(frame)
+                            await writer.drain()
+                            status_code, nbytes, body_sample, conn_close = await read_http_response(reader)
+                            if conn_close:
+                                writer.close()
+                                reader = writer = None
+                            if expect_status > 0 and status_code != expect_status:
+                                assert_ok = False
+                            if expect_bytes and expect_bytes not in body_sample:
+                                assert_ok = False
+                            err_flag = False
+                            break
+                        except Exception:
+                            if writer is not None:
+                                try:
+                                    writer.close()
+                                except Exception:
+                                    pass
+                            reader = writer = None
+                            err_flag = True
+
+                    lat_ms = (time.perf_counter() - t0) * 1000.0
+                    shard.record(status_code, lat_ms, nbytes, err_flag, assert_ok, stage_idx, apdex_t)
+
+                    if circuit_breaker and shard.count >= 20 and (seq % 16 == 0):
+                        tot_req = sum(s.count for s in shards)
+                        if tot_req >= 50:
+                            bad_req = sum(s.s5xx + s.errors for s in shards)
+                            if (bad_req * 100.0 / tot_req) >= abort_5xx_pct:
+                                tripped = True
+                                stop_flag = True
+                                break
+            finally:
+                if writer is not None:
+                    try:
+                        writer.close()
+                    except Exception:
+                        pass
+
+        tasks = [asyncio.create_task(worker_task(i, shards[i])) for i in range(workers)]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return shards, time.perf_counter() - started, tripped
+
+    @staticmethod
+    def _ascii_histogram(merged_hist, total_count):
+        if total_count == 0:
+            return ""
+        bands = [
+            ("< 1ms", 0, 10),
+            ("1 - 5ms", 10, 50),
+            ("5 - 20ms", 50, 200),
+            ("20 - 100ms", 200, 1000),
+            ("100 - 500ms", 1000, 5000),
+            (">= 500ms", 5000, HIST_BUCKETS + 1),
+        ]
+        lines = []
+        for label, lo, hi in bands:
+            cnt = sum(v for b, v in merged_hist.items() if lo <= b < hi)
+            pct = (cnt * 100.0) / total_count
+            bar_len = int(round(pct / 4.0))
+            bar = "█" * bar_len + "░" * (25 - bar_len)
+            lines.append(f"  {label:<12} | {bar} | {pct:5.1f}% ({cnt})")
+        return "\n".join(lines)
 
     def run_python_engine(
         self,
@@ -279,9 +640,17 @@ class Hyperion(VibeTool):
         payload_path="",
         custom_headers=None,
         timeout_raw="5s",
+        cache_bust=False,
+        expect_status=0,
+        expect_text="",
+        apdex_t=100.0,
         slo_p95=0.0,
+        slo_p99=0.0,
         slo_err_pct=0.0,
+        slo_apdex=0.0,
+        slo_min_rps=0.0,
         circuit_breaker=True,
+        abort_5xx_pct=80.0,
         report_file="",
         json_out="",
     ):
@@ -290,182 +659,227 @@ class Hyperion(VibeTool):
         timeout = _parse_duration(timeout_raw)
         rate = _parse_rate(rate_raw)
         workers = max(1, int(workers))
+        apdex_t = max(1.0, float(apdex_t or 100.0))
 
         parsed = urllib.parse.urlsplit(target)
         scheme = parsed.scheme.lower()
         host = (parsed.hostname or "").lower()
         port = parsed.port
 
-        scenario_paths = self._build_scenario_paths(target, endpoints_csv)
-        body_bytes = None
+        ring_paths, specs = self._build_weighted_ring(target, endpoints_csv)
+        payload_template = None
         if payload_path:
             with open(payload_path, "rb") as fh:
-                body_bytes = fh.read()
+                payload_template = fh.read()
 
         req_headers = {
-            "User-Agent": privacy_user_agent("Hyperion"),
+            "User-Agent": privacy_user_agent("Hyperion/2.0"),
             "Accept": "*/*",
-            "Connection": "keep-alive",
         }
-        if body_bytes is not None:
+        if payload_template is not None:
             req_headers["Content-Type"] = "application/json"
         for raw_hdr in custom_headers or []:
             if ":" in raw_hdr:
                 k, v = raw_hdr.split(":", 1)
                 req_headers[k.strip()] = v.strip()
 
+        pre_status, pre_lat_ms = self._probe_single_sync(
+            scheme, host, port, ring_paths[0], method, req_headers, timeout
+        )
         self.log(
-            f"Engine=Python-KeepAlive target={target} endpoints={len(scenario_paths)} "
+            f"Engine=Async-Sharded-HDR v2.0 | target={target} endpoints={len(specs)} "
             f"profile={profile} method={method} duration={duration:.1f}s workers={workers} rate={rate_raw}"
         )
+        self.log(f"Preflight baseline: HTTP {pre_status} ({pre_lat_ms:.2f}ms) | Guard=VERIFIED")
 
-        lock = threading.Lock()
-        stop_event = threading.Event()
-        tripped = False
+        shards, elapsed, tripped = asyncio.run(
+            self._run_async_coro(
+                scheme=scheme,
+                host=host,
+                port=port,
+                ring_paths=ring_paths,
+                profile=profile,
+                method=method,
+                rate=rate,
+                duration=duration,
+                workers=workers,
+                payload_template=payload_template,
+                req_headers=req_headers,
+                timeout=timeout,
+                cache_bust=cache_bust,
+                expect_status=expect_status,
+                expect_text=expect_text,
+                apdex_t=apdex_t,
+                circuit_breaker=circuit_breaker,
+                abort_5xx_pct=abort_5xx_pct,
+            )
+        )
+        elapsed = max(0.001, elapsed)
+        post_status, post_lat_ms = self._probe_single_sync(
+            scheme, host, port, ring_paths[0], method, req_headers, timeout
+        )
 
-        total = 0
-        s2xx = s3xx = s4xx = s5xx = sother = errors = 0
-        total_bytes = 0
-        sum_ms = 0.0
-        sum_sq_ms = 0.0
-        min_ms = 0.0
-        max_ms = 0.0
-        latencies = []
-        seq_counter = 0
+        # Merge lock-free worker shards
+        merged_hist = {}
+        total = overflow = s2xx = s3xx = s4xx = s429 = s5xx = sother = errors = assert_fails = 0
+        sum_ms = sum_sq_ms = min_ms = max_ms = 0.0
+        apdex_sat = apdex_tol = 0
+        stage_counts = [0, 0, 0, 0]
+        stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
+        stage_5xx_err = [0, 0, 0, 0]
 
-        started = time.perf_counter()
-        deadline = started + duration
+        for s in shards:
+            if s.count == 0:
+                continue
+            if total == 0 or s.min_ms < min_ms:
+                min_ms = s.min_ms
+            if s.max_ms > max_ms:
+                max_ms = s.max_ms
+            total += s.count
+            overflow += s.overflow
+            s2xx += s.s2xx
+            s3xx += s.s3xx
+            s4xx += s.s4xx
+            s429 += s.s429
+            s5xx += s.s5xx
+            sother += s.sother
+            errors += s.errors
+            assert_fails += s.assert_fails
+            sum_ms += s.sum_ms
+            sum_sq_ms += s.sum_sq_ms
+            apdex_sat += s.apdex_sat
+            apdex_tol += s.apdex_tol
+            for i in range(4):
+                stage_counts[i] += s.stage_counts[i]
+                stage_sum_ms[i] += s.stage_sum_ms[i]
+                stage_5xx_err[i] += s.stage_5xx_err[i]
+            for b, cnt in s.hist.items():
+                merged_hist[b] = merged_hist.get(b, 0) + cnt
 
-        def worker_loop():
-            nonlocal total, s2xx, s3xx, s4xx, s5xx, sother, errors, total_bytes
-            nonlocal sum_ms, sum_sq_ms, min_ms, max_ms, tripped, seq_counter
+        sorted_buckets = sorted(merged_hist.items())
 
-            next_slot = time.perf_counter()
-            while not stop_event.is_set():
-                now = time.perf_counter()
-                if now >= deadline:
-                    break
+        def hist_quantile(q):
+            if total == 0:
+                return 0.0
+            target_rank = max(1, int(math.ceil((q / 100.0) * total)))
+            cum = 0
+            for b, cnt in sorted_buckets:
+                cum += cnt
+                if cum >= target_rank:
+                    return round((b + 0.5) * HIST_STEP_MS, 2)
+            return round(max_ms, 2)
 
-                progress = (now - started) / max(duration, 0.001)
-                eff_rate = _effective_rate(rate, profile, progress)
-                if eff_rate > 0:
-                    worker_rate = max(0.5, eff_rate / max(1, workers))
-                    interval = 1.0 / worker_rate
-                    if now < next_slot:
-                        sleep_for = min(next_slot - now, max(0.0, deadline - now))
-                        if sleep_for > 0:
-                            time.sleep(sleep_for)
-                    next_slot = max(time.perf_counter(), next_slot + interval)
+        p50 = hist_quantile(50.0)
+        p75 = hist_quantile(75.0)
+        p90 = hist_quantile(90.0)
+        p95 = hist_quantile(95.0)
+        p99 = hist_quantile(99.0)
+        p999 = hist_quantile(99.9)
+        p9999 = hist_quantile(99.99)
 
-                with lock:
-                    idx = seq_counter
-                    seq_counter += 1
-                path = scenario_paths[idx % len(scenario_paths)]
-
-                st, lat_ms, nbytes, err = self._fire_once(
-                    scheme, host, port, path, method, body_bytes, req_headers, timeout
-                )
-
-                with lock:
-                    total += 1
-                    total_bytes += nbytes
-                    if err or st == 0:
-                        errors += 1
-                    elif 200 <= st < 300:
-                        s2xx += 1
-                    elif 300 <= st < 400:
-                        s3xx += 1
-                    elif 400 <= st < 500:
-                        s4xx += 1
-                    elif 500 <= st < 600:
-                        s5xx += 1
-                    else:
-                        sother += 1
-
-                    sum_ms += lat_ms
-                    sum_sq_ms += lat_ms * lat_ms
-                    if total == 1 or lat_ms < min_ms:
-                        min_ms = lat_ms
-                    if lat_ms > max_ms:
-                        max_ms = lat_ms
-
-                    if len(latencies) < RESERVOIR_CAP:
-                        latencies.append(lat_ms)
-                    else:
-                        j = random.randint(0, total - 1)
-                        if j < RESERVOIR_CAP:
-                            latencies[j] = lat_ms
-
-                    if circuit_breaker and total >= 50 and not tripped:
-                        if (s5xx + errors) / float(total) >= 0.80:
-                            tripped = True
-                            stop_event.set()
-            self._reset_connection()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(worker_loop) for _ in range(workers)]
-            for fut in concurrent.futures.as_completed(futures):
-                fut.result()
-
-        elapsed = max(0.001, time.perf_counter() - started)
-        sorted_lat = sorted(latencies)
-        p50 = _percentile(sorted_lat, 50)
-        p90 = _percentile(sorted_lat, 90)
-        p95 = _percentile(sorted_lat, 95)
-        p99 = _percentile(sorted_lat, 99)
-        p999 = _percentile(sorted_lat, 99.9)
         avg_ms = (sum_ms / total) if total > 0 else 0.0
         variance = ((sum_sq_ms / total) - (avg_ms * avg_ms)) if total > 0 else 0.0
         jitter_ms = math.sqrt(variance) if variance > 0 else 0.0
+        apdex = ((apdex_sat + 0.5 * apdex_tol) / float(total)) if total > 0 else 0.0
         rps = total / elapsed
-        err_count = s5xx + errors
-        err_pct = (err_count * 100.0 / total) if total > 0 else 0.0
+        err_pct = ((s5xx + errors) * 100.0 / total) if total > 0 else 0.0
+        slowdown = (post_lat_ms / pre_lat_ms) if pre_lat_ms > 0 and post_lat_ms > 0 else 1.0
+
+        # 4-Stage breakdown & saturation knee detection
+        stage_dur = max(elapsed / 4.0, 0.001)
+        stage_labels = ["Q1 (0-25%)", "Q2 (25-50%)", "Q3 (50-75%)", "Q4 (75-100%)"]
+        stages = []
+        knee_rps = 0.0
+        q1_avg = 0.0
+        for i in range(4):
+            c = stage_counts[i]
+            s_avg = (stage_sum_ms[i] / c) if c > 0 else 0.0
+            s_err = (stage_5xx_err[i] * 100.0 / c) if c > 0 else 0.0
+            s_rps = c / stage_dur
+            if i == 0:
+                q1_avg = s_avg
+            elif knee_rps == 0.0 and ((q1_avg > 0 and s_avg > q1_avg * 2.5) or s_err >= 5.0):
+                knee_rps = round(s_rps, 1)
+            stages.append({
+                "stage": i + 1,
+                "label": stage_labels[i],
+                "requests": c,
+                "rps": round(s_rps, 2),
+                "avg_ms": round(s_avg, 2),
+                "error_rate_pct": round(s_err, 2),
+            })
 
         if tripped:
             self.log(
-                "CIRCUIT BREAKER TRIPPED: >=80% error/5xx rate detected. Load halted automatically.",
+                f"CIRCUIT BREAKER TRIPPED: >= {abort_5xx_pct:.1f}% error/5xx rate detected. Load halted.",
                 "crit",
             )
 
         slo_failed = False
         slo_notes = []
         if slo_p95 and slo_p95 > 0:
-            if p95 > slo_p95:
-                slo_failed = True
-                slo_notes.append(f"FAIL: p95 {p95:.1f}ms > SLO {slo_p95:.1f}ms")
-            else:
-                slo_notes.append(f"PASS: p95 {p95:.1f}ms <= SLO {slo_p95:.1f}ms")
+            ok = p95 <= slo_p95
+            slo_failed = slo_failed or (not ok)
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: p95 {p95:.2f}ms <= {slo_p95:.2f}ms")
+        if slo_p99 and slo_p99 > 0:
+            ok = p99 <= slo_p99
+            slo_failed = slo_failed or (not ok)
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: p99 {p99:.2f}ms <= {slo_p99:.2f}ms")
         if slo_err_pct and slo_err_pct > 0:
-            if err_pct > slo_err_pct:
-                slo_failed = True
-                slo_notes.append(f"FAIL: err/5xx {err_pct:.2f}% > SLO {slo_err_pct:.2f}%")
-            else:
-                slo_notes.append(f"PASS: err/5xx {err_pct:.2f}% <= SLO {slo_err_pct:.2f}%")
+            ok = err_pct <= slo_err_pct
+            slo_failed = slo_failed or (not ok)
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: err/5xx {err_pct:.2f}% <= {slo_err_pct:.2f}%")
+        if slo_apdex and slo_apdex > 0:
+            ok = apdex >= slo_apdex
+            slo_failed = slo_failed or (not ok)
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: Apdex {apdex:.3f} >= {slo_apdex:.3f}")
+        if slo_min_rps and slo_min_rps > 0:
+            ok = rps >= slo_min_rps
+            slo_failed = slo_failed or (not ok)
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: RPS {rps:.1f} >= {slo_min_rps:.1f}")
+
+        sig_input = f"hyperion|{target}|{total}|{rps:.2f}|{p95:.2f}|{slo_failed}".encode("utf-8")
+        receipt_hmac = hmac.new(GUARD_CODE.encode("utf-8"), sig_input, hashlib.sha256).hexdigest()[:24]
 
         self.log(
-            f"Completed {total} req in {elapsed:.2f}s ({rps:.1f} RPS) | "
-            f"2xx={s2xx} 3xx={s3xx} 4xx={s4xx} 5xx={s5xx} err={errors} ({err_pct:.2f}%)",
+            f"Completed {total} req in {elapsed:.2f}s ({rps:.1f} RPS) | Apdex={apdex:.3f} | "
+            f"2xx={s2xx} 3xx={s3xx} 4xx={s4xx}(429:{s429}) 5xx={s5xx} err={errors} ({err_pct:.2f}%)",
             "pass" if not (tripped or slo_failed) else "crit",
         )
         self.log(
-            f"Latency ms: min={min_ms:.1f} avg={avg_ms:.1f} jitter(σ)={jitter_ms:.1f} "
-            f"p50={p50:.1f} p90={p90:.1f} p95={p95:.1f} p99={p99:.1f} p99.9={p999:.1f} max={max_ms:.1f}"
+            f"HDR Latency ms: min={min_ms:.2f} avg={avg_ms:.2f} jitter(σ)={jitter_ms:.2f} "
+            f"p50={p50:.2f} p75={p75:.2f} p90={p90:.2f} p95={p95:.2f} p99={p99:.2f} p99.9={p999:.2f} p99.99={p9999:.2f} max={max_ms:.2f}"
+        )
+        self.log(
+            f"Recovery check: pre={pre_lat_ms:.2f}ms -> post={post_lat_ms:.2f}ms (slowdown={slowdown:.2f}x) | Receipt={receipt_hmac}"
         )
         if slo_notes:
             self.log("SLO Evaluation: " + " | ".join(slo_notes), "crit" if slo_failed else "pass")
 
+        hist_chart = self._ascii_histogram(merged_hist, total)
+        stage_table = "\n".join(
+            f"  - {st['label']}: `{st['requests']} req` | `{st['rps']:.1f} RPS` | `avg={st['avg_ms']:.2f}ms` | `err={st['error_rate_pct']:.2f}%`"
+            for st in stages
+        )
+        knee_desc = f"{knee_rps:.1f} RPS" if knee_rps > 0 else "none (linear scaling maintained)"
+
         md_report = (
-            "\n## Hyperion Resilience & SLO Report\n\n"
-            f"- Target: `{sanitize_text(target)}` ({len(scenario_paths)} scenario endpoint(s))\n"
-            f"- Profile / Method: `{profile}` / `{method}`\n"
-            f"- Duration / Workers: `{elapsed:.2f}s` / `{workers}`\n"
-            f"- Total requests: `{total}` (`{rps:.1f} RPS`)\n"
-            f"- 2xx / 3xx / 4xx / 5xx / errors: `{s2xx} / {s3xx} / {s4xx} / {s5xx} / {errors}` (error/5xx rate: `{err_pct:.2f}%`)\n"
-            f"- Latency min / avg / jitter(σ) / max: `{min_ms:.1f}ms / {avg_ms:.1f}ms / {jitter_ms:.1f}ms / {max_ms:.1f}ms`\n"
-            f"- Percentiles p50 / p90 / p95 / p99 / p99.9: `{p50:.1f}ms / {p90:.1f}ms / {p95:.1f}ms / {p99:.1f}ms / {p999:.1f}ms`\n"
+            "\n## ⚡ Hyperion v2.0 Resilience, HDR & SLO Report\n\n"
+            f"- Target: `{sanitize_text(target)}` ({len(specs)} weighted endpoint(s))\n"
+            f"- Profile / Method / Workers: `{profile}` / `{method}` / `{workers}`\n"
+            f"- Total Requests / Throughput: `{total}` (`{rps:.1f} RPS` over `{elapsed:.2f}s`)\n"
+            f"- Apdex Score (T={apdex_t:.0f}ms): `{apdex:.3f}` | Saturation Knee: `{knee_desc}`\n"
+            f"- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / err): `{s2xx} / {s3xx} / {s4xx} / {s429} / {s5xx} / {errors}` (error/5xx rate: `{err_pct:.2f}%`)\n"
+            f"- Latency min / avg / jitter(σ) / max: `{min_ms:.2f}ms / {avg_ms:.2f}ms / {jitter_ms:.2f}ms / {max_ms:.2f}ms`\n"
+            f"- HDR Percentiles p50 / p75 / p90 / p95 / p99 / p99.9 / p99.99: `{p50:.2f}ms / {p75:.2f}ms / {p90:.2f}ms / {p95:.2f}ms / {p99:.2f}ms / {p999:.2f}ms / {p9999:.2f}ms`\n"
+            f"- Pre/Post Recovery: `pre={pre_lat_ms:.2f}ms (HTTP {pre_status}) -> post={post_lat_ms:.2f}ms (HTTP {post_status}) [slowdown={slowdown:.2f}x]`\n"
+            f"- Guard Receipt HMAC: `{receipt_hmac}`\n"
         )
         if slo_notes:
             md_report += f"- SLO Gate: `{' | '.join(slo_notes)}`\n"
+        md_report += f"\n### Stage Progression\n{stage_table}\n"
+        if hist_chart:
+            md_report += f"\n### Latency Distribution (HDR 100us Buckets)\n```text\n{hist_chart}\n```\n"
 
         if report_file:
             os.makedirs(os.path.dirname(os.path.abspath(report_file)), exist_ok=True)
@@ -476,32 +890,45 @@ class Hyperion(VibeTool):
         if json_out:
             os.makedirs(os.path.dirname(os.path.abspath(json_out)), exist_ok=True)
             metrics_doc = {
-                "engine": "hyperion-python-keepalive",
+                "engine": "hyperion-async-sharded-hdr",
+                "version": "2.0.0",
+                "guard_verified": True,
+                "receipt_hmac": receipt_hmac,
                 "target": sanitize_text(target),
-                "scenario_paths": scenario_paths,
+                "endpoints": specs,
                 "profile": profile,
                 "method": method,
                 "duration_seconds": round(elapsed, 3),
                 "workers": workers,
                 "total_requests": total,
                 "average_rps": round(rps, 2),
+                "saturation_knee_rps": knee_rps,
+                "apdex_score": round(apdex, 4),
                 "status_2xx": s2xx,
                 "status_3xx": s3xx,
                 "status_4xx": s4xx,
+                "status_429_ratelim": s429,
                 "status_5xx": s5xx,
                 "transport_errors": errors,
+                "assertion_failures": assert_fails,
                 "error_rate_pct": round(err_pct, 3),
                 "circuit_tripped": tripped,
                 "slo_failed": slo_failed,
+                "preflight_ms": round(pre_lat_ms, 2),
+                "postflight_ms": round(post_lat_ms, 2),
+                "recovery_slowdown": round(slowdown, 2),
+                "stages": stages,
                 "latency_ms": {
                     "min": round(min_ms, 2),
                     "avg": round(avg_ms, 2),
                     "stdev": round(jitter_ms, 2),
-                    "p50": round(p50, 2),
-                    "p90": round(p90, 2),
-                    "p95": round(p95, 2),
-                    "p99": round(p99, 2),
-                    "p999": round(p999, 2),
+                    "p50": p50,
+                    "p75": p75,
+                    "p90": p90,
+                    "p95": p95,
+                    "p99": p99,
+                    "p999": p999,
+                    "p9999": p9999,
                     "max": round(max_ms, 2),
                 },
             }
@@ -515,7 +942,7 @@ class Hyperion(VibeTool):
 def _confirm_external(host, rate_desc, assume_yes=False):
     bar = "=" * 64
     print(bar)
-    print("  ⚠  HYPERION EXTERNAL TARGET — ACTIVE LOAD TEST")
+    print("  ⚠  HYPERION v2.0 EXTERNAL TARGET — ACTIVE LOAD TEST")
     print(bar)
     print(f"  Host : {sanitize_text(host)}")
     print(f"  Rate : {rate_desc}")
@@ -532,27 +959,45 @@ def _confirm_external(host, rate_desc, assume_yes=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Hyperion - Next-Gen Guarded Resilience, Multi-Profile & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
+        description="Hyperion v2.0 - 14x Sharded Resilience, HDR Histogram & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
     )
     parser.add_argument("-t", "--target", "--url", dest="target", default="http://localhost:3456/", help="Target URL endpoint")
-    parser.add_argument("--endpoints", default="", help="Comma-separated subpaths on the same host (e.g. '/,/api/config,/api/guestbook')")
-    parser.add_argument("-P", "--profile", choices=["constant", "ramp", "step", "spike"], default="constant", help="Load profile (default: constant)")
+    parser.add_argument(
+        "--endpoints",
+        default="",
+        help="Weighted subpaths on the same host (e.g. '/:50,/api/config:30,/api/guestbook:20')",
+    )
+    parser.add_argument(
+        "-P",
+        "--profile",
+        choices=["constant", "ramp", "step", "spike", "sawtooth", "stress-knee"],
+        default="constant",
+        help="Load profile (default: constant)",
+    )
     parser.add_argument("-m", "--method", default="GET", help="HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)")
-    parser.add_argument("-r", "--rate", default="1000", help="Target rate in RPS (e.g. 1000, 25k, 60000rpm, or 0 for local full-send)")
+    parser.add_argument("-r", "--rate", default="1000", help="Target rate in RPS (up to 3.5m on local/private labs; 9999.99 RPS cap on trusted external)")
     parser.add_argument("-d", "--duration", default="10s", help="Test duration (e.g. 10s, 1m)")
-    parser.add_argument("-w", "--workers", type=int, default=32, help="Concurrent workers")
-    parser.add_argument("-p", "--payload", default="", help="Optional payload file path for POST/PUT/PATCH")
+    parser.add_argument("-w", "--workers", type=int, default=32, help="Concurrent workers/coroutines")
+    parser.add_argument("-p", "--payload", default="", help="Optional payload file path (supports {{seq}}, {{timestamp}}, {{uuid}})")
     parser.add_argument("-H", "--header", "--headers", dest="headers", action="append", default=[], help="Custom header 'Name: value' (repeatable)")
     parser.add_argument("--timeout", default="5s", help="Per-request timeout (default: 5s)")
     parser.add_argument("-g", "--guard", "--code", dest="guard", default="", help="Required authorization guard code")
+    parser.add_argument("--cache-bust", action="store_true", help="Append per-request cache-busting query and sequence header")
+    parser.add_argument("--expect-status", type=int, default=0, help="Expected HTTP status code assertion")
+    parser.add_argument("--expect-text", default="", help="Substring assertion required in response body")
+    parser.add_argument("--apdex-t", type=float, default=100.0, help="Apdex satisfactory latency threshold T in ms (default: 100)")
     parser.add_argument("--slo-p95", type=float, default=0.0, help="SLO gate: fail if p95 latency (ms) exceeds threshold")
+    parser.add_argument("--slo-p99", type=float, default=0.0, help="SLO gate: fail if p99 latency (ms) exceeds threshold")
     parser.add_argument("--slo-err-pct", type=float, default=0.0, help="SLO gate: fail if 5xx/error percentage exceeds threshold")
-    parser.add_argument("--no-circuit-breaker", action="store_true", help="Disable the 80%% 5xx/error auto-abort circuit breaker")
+    parser.add_argument("--slo-apdex", type=float, default=0.0, help="SLO gate: fail if Apdex score (0.0-1.0) is below threshold")
+    parser.add_argument("--slo-min-rps", type=float, default=0.0, help="SLO gate: fail if achieved RPS is below threshold")
+    parser.add_argument("--no-circuit-breaker", action="store_true", help="Disable the auto-abort circuit breaker")
+    parser.add_argument("--abort-5xx-pct", type=float, default=80.0, help="Circuit-breaker 5xx/error percentage threshold (default: 80)")
     parser.add_argument("--engine", choices=["auto", "python", "go"], default="auto", help="Execution engine (default: auto)")
     parser.add_argument("--report-file", default="", help="Optional Markdown report path")
     parser.add_argument("--json-out", default="", help="Optional JSON metrics output path")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip interactive hostname prompt for trusted external hosts")
-    parser.add_argument("-v", "--version", action="version", version="Hyperion 1.0.0")
+    parser.add_argument("-v", "--version", action="version", version="Hyperion 2.0.0")
     args = parser.parse_args(argv)
 
     # 1. Enforce mandatory guard code XXLMILLEAMEAN
@@ -594,7 +1039,7 @@ def main(argv=None):
             print(f"[-] Rate {parsed_rate:.0f} RPS exceeds local safety cap ({MAX_PRIVATE_RPS:.0f} RPS).")
             return 2
 
-    # 3. Choose Go engine if available and requested, else Python keep-alive engine
+    # 3. Choose Go engine if available and requested, else Python sharded async HDR engine
     go_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperion")
     has_go = bool(shutil.which("go")) and os.path.isfile(os.path.join(go_dir, "main.go"))
 
@@ -613,16 +1058,30 @@ def main(argv=None):
             "-d", str(args.duration),
             "-w", str(args.workers),
             "--timeout", str(args.timeout),
+            "--apdex-t", str(args.apdex_t),
+            "--abort-5xx-pct", str(args.abort_5xx_pct),
             f"--circuit-breaker={'false' if args.no_circuit_breaker else 'true'}",
         ]
         if args.endpoints:
             cmd += ["--endpoints", args.endpoints]
         if args.payload:
             cmd += ["-p", args.payload]
+        if args.cache_bust:
+            cmd.append("--cache-bust")
+        if args.expect_status > 0:
+            cmd += ["--expect-status", str(args.expect_status)]
+        if args.expect_text:
+            cmd += ["--expect-text", args.expect_text]
         if args.slo_p95 > 0:
             cmd += ["--slo-p95", str(args.slo_p95)]
+        if args.slo_p99 > 0:
+            cmd += ["--slo-p99", str(args.slo_p99)]
         if args.slo_err_pct > 0:
             cmd += ["--slo-err-pct", str(args.slo_err_pct)]
+        if args.slo_apdex > 0:
+            cmd += ["--slo-apdex", str(args.slo_apdex)]
+        if args.slo_min_rps > 0:
+            cmd += ["--slo-min-rps", str(args.slo_min_rps)]
         if args.report_file:
             cmd += ["--report-file", os.path.abspath(args.report_file)]
         if args.json_out:
@@ -642,9 +1101,17 @@ def main(argv=None):
         payload_path=args.payload,
         custom_headers=args.headers,
         timeout_raw=args.timeout,
+        cache_bust=args.cache_bust,
+        expect_status=args.expect_status,
+        expect_text=args.expect_text,
+        apdex_t=args.apdex_t,
         slo_p95=args.slo_p95,
+        slo_p99=args.slo_p99,
         slo_err_pct=args.slo_err_pct,
+        slo_apdex=args.slo_apdex,
+        slo_min_rps=args.slo_min_rps,
         circuit_breaker=not args.no_circuit_breaker,
+        abort_5xx_pct=args.abort_5xx_pct,
         report_file=args.report_file,
         json_out=args.json_out,
     )

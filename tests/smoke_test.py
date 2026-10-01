@@ -176,6 +176,33 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"SARIF check errored: {e}")
 
+    # 1f. Hyperion v2.0 14x ceiling, guard, weighted ring & profiles --------
+    checks += 1
+    try:
+        import hyperion  # noqa: E402
+
+        ring, specs = hyperion.Hyperion._build_weighted_ring(
+            "http://127.0.0.1:3456/", "/:50,/api/config:30,/api/guestbook:20"
+        )
+        ok_14x = hyperion.MAX_PRIVATE_RPS == 3_500_000.0
+        ok_guard = (
+            hyperion.verify_guard_code("XXLMILLEAMEAN", interactive=False)
+            and not hyperion.verify_guard_code("WRONG", interactive=False)
+        )
+        ok_ring = len(ring) == 100 and len(specs) == 3
+        ok_profiles = (
+            hyperion._effective_rate(1000.0, "sawtooth", 0.5) > 0
+            and hyperion._effective_rate(1000.0, "stress-knee", 0.8) == 1000.0
+        )
+        if not (ok_14x and ok_guard and ok_ring and ok_profiles):
+            failures.append(
+                f"Hyperion v2.0 unit check failed: 14x={ok_14x} guard={ok_guard} ring={ok_ring} profiles={ok_profiles}"
+            )
+        else:
+            print("[PASS] Hyperion v2.0 14x ceiling (3.5M RPS), XXLMILLEAMEAN guard, weighted ring & 6 profiles")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Hyperion v2.0 unit check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [

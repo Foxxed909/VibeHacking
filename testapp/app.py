@@ -173,6 +173,8 @@ def homepage():
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
     server_version = "NovaChat/1.0"
+    protocol_version = "HTTP/1.1"
+    disable_nagle_algorithm = True
 
     def _send(self, code, body, ctype="application/json", extra=None):
         if isinstance(body, (dict, list)):
