@@ -342,6 +342,11 @@ class VibeTool:
         return False
 
     def safe_request(self, url, method='GET', data=None, headers=None, timeout=10, follow_redirects=True):
+        if url and "://" not in url:
+            first_host = url.split("/")[0].split(":")[0].lower()
+            default_scheme = "http" if first_host in ("localhost", "127.0.0.1", "::1") else "https"
+            url = f"{default_scheme}://{url}"
+
         if headers is None:
             headers = {}
         else:
@@ -358,7 +363,7 @@ class VibeTool:
             )
         headers.setdefault('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8')
 
-        # Optional enterprise grey-box auth injection via environment variables
+        # Optional enterprise grey-box & cloud-edge auth injection via environment variables
         env_auth = os.environ.get("VIBE_AUTH_HEADER", "").strip()
         if env_auth and ":" in env_auth:
             k, v = env_auth.split(":", 1)
@@ -369,6 +374,21 @@ class VibeTool:
         env_cookie = os.environ.get("VIBE_COOKIE", "").strip()
         if env_cookie and "Cookie" not in headers:
             headers["Cookie"] = env_cookie
+
+        vercel_bypass = os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "").strip()
+        if vercel_bypass:
+            headers.setdefault("x-vercel-protection-bypass", vercel_bypass)
+            headers.setdefault("x-vercel-set-bypass-cookie", "samesitenone")
+
+        cf_id = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip()
+        cf_sec = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip()
+        if cf_id and cf_sec:
+            headers.setdefault("CF-Access-Client-Id", cf_id)
+            headers.setdefault("CF-Access-Client-Secret", cf_sec)
+
+        aws_key = os.environ.get("AWS_API_GATEWAY_KEY", "").strip()
+        if aws_key:
+            headers.setdefault("x-api-key", aws_key)
 
         try:
             body = None

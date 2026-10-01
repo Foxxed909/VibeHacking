@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-hyperion.py v2.0 — 14x Sharded Resilience, HDR Histogram & SLO Load Engine.
+hyperion.py v2.1 — 14x Sharded Resilience, HDR Histogram, Cloud/Edge (Cloudflare, AWS, Vercel) & SLO Load Engine.
 
-Hyperion v2.0 is VibeHacking's next-generation competitor to Maelstrom:
+Hyperion v2.1 is VibeHacking's next-generation competitor to Maelstrom:
   1. Mandatory `XXLMILLEAMEAN` constant-time cryptographic guard + audit log
   2. Tamper-evident HMAC-SHA256 signed run receipt (`receipt_hmac`)
   3. 14x Private-Lab Ceiling (3,500,000 RPS max private cap vs Maelstrom's 250k)
      while strictly enforcing 9999.99 RPS / 256 workers + `authorized_targets.txt`
-     on external targets
-  4. Dual Sharded Engine: Lock-free Go HTTP/2 engine (`TOOLS/hyperion/main.go`) +
-     Lock-free Python `asyncio` raw HTTP/1.1 Keep-Alive socket-pool engine
-  5. 6 Load Profiles: `constant`, `ramp`, `step`, `spike`, `sawtooth`, `stress-knee`
-  6. Automatic Saturation Knee Detector (identifies exact RPS where latency spikes)
-  7. Weighted Multi-Endpoint Scenario Ring (`--endpoints "/:50,/api/config:30,/api/guestbook:20"`)
-  8. Dynamic Request Mutation Macros (`--cache-bust`, `{{seq}}`, `{{timestamp}}`, `{{uuid}}`)
-  9. O(1) Fixed-Memory HDR Histogram (100us resolution: p50, p75, p90, p95, p99, p99.9, p99.99 + ASCII chart)
-  10. Apdex (Application Performance Index) Score (`--apdex-t`) & Jitter (σ)
-  11. 4-Stage Progression Telemetry Table (`Q1`–`Q4` RPS, avg latency, error %)
-  12. Pre-Flight Baseline & Post-Load Recovery Slowdown Factor (`pre_ms -> post_ms`)
-  13. Rate-Limiter (`HTTP 429`) & Response Integrity Assertions (`--expect-status`, `--expect-text`)
-  14. Multi-Threshold Circuit Breaker + 5-Metric CI/CD SLO Gate (`--slo-p95`, `--slo-p99`, `--slo-err-pct`, `--slo-apdex`, `--slo-min-rps`)
+     on external targets (including Cloudflare, AWS, and `.vercel.app` apps)
+  4. Native Cloudflare, AWS (CloudFront / ALB / API Gateway / Lambda), and Vercel (`.vercel.app`) Support:
+     - Explicit TLS ALPN (`http/1.1`) & SNI override (`--sni`, `--resolve`) for Cloudflare/Vercel/AWS TLS 1.3 edges
+     - Preflight canonical redirect follower (`--follow-redirects`) for `301/302/307/308` edge redirects
+     - Edge Cache Modes (`--edge-mode {auto,cdn-cache,origin-bypass}`) to test either CDN edge absorption or origin/serverless capacity
+     - Provider Protection Bypasses:
+       * Vercel Protection Bypass (`--vercel-bypass` / `VERCEL_AUTOMATION_BYPASS_SECRET`)
+       * Cloudflare Access Service Tokens (`--cf-access-id`, `--cf-access-secret`)
+       * AWS API Gateway Key (`--aws-api-key`)
+     - Real-time Edge Telemetry: auto-detects provider (`cloudflare`, `vercel`, `aws-cloudfront`, `aws-alb-apigw`),
+       PoP/region codes (`CF-Ray`, `x-vercel-id`, `x-amz-cf-pop`), Edge Cache HIT/MISS/DYNAMIC/BYPASS ratios,
+       WAF/Bot challenges (`cf-mitigated`, AWS WAF, Vercel Firewall), Cloudflare `520-526` origin errors,
+       and Vercel/Lambda serverless cold-start or concurrency throttles
+  5. Dual Sharded Engine: Lock-free Go HTTP/2 engine (`TOOLS/hyperion/main.go`) +
+     Lock-free Python `asyncio` raw HTTP/1.1 Keep-Alive + `TCP_NODELAY` socket-pool engine
+  6. 6 Load Profiles: `constant`, `ramp`, `step`, `spike`, `sawtooth`, `stress-knee`
+  7. Automatic Saturation Knee Detector, Weighted Multi-Endpoint Ring, Dynamic Request Macros,
+     O(1) 60,000-bucket HDR Histogram, Apdex Score, Pre/Post Recovery Probe, Circuit Breaker & 5 SLO Gates
 """
 import argparse
 import asyncio
@@ -143,36 +148,121 @@ def _is_local_or_private(host):
         return False
 
 
-def _load_authorized_hosts():
-    hosts = set()
+def _authorized_targets_path():
     here = os.path.dirname(os.path.abspath(__file__))
     for _ in range(6):
         candidate = os.path.join(here, "authorized_targets.txt")
         if os.path.isfile(candidate):
-            try:
-                with open(candidate, "r", encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "*" in line or "?" in line:
-                            continue
-                        host = line
-                        if "://" in host:
-                            host = urllib.parse.urlparse(host).hostname or host
-                        host = host.split("/")[0].strip().lower()
-                        if "@" in host:
-                            host = host.split("@")[-1]
-                        if host.count(":") == 1:
-                            host = host.split(":")[0]
-                        if host:
-                            hosts.add(host)
-            except OSError:
-                pass
-            break
+            return candidate
         parent = os.path.dirname(here)
         if parent == here:
             break
         here = parent
+    return os.path.join(_root, "authorized_targets.txt")
+
+
+def _load_authorized_hosts():
+    hosts = set()
+    candidate = _authorized_targets_path()
+    if os.path.isfile(candidate):
+        try:
+            with open(candidate, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "*" in line or "?" in line:
+                        continue
+                    host = line
+                    if "://" in host:
+                        host = urllib.parse.urlparse(host).hostname or host
+                    host = host.split("/")[0].strip().lower()
+                    if "@" in host:
+                        host = host.split("@")[-1]
+                    if host.count(":") == 1:
+                        host = host.split(":")[0]
+                    if host:
+                        hosts.add(host)
+        except OSError:
+            pass
     return hosts
+
+
+def _authorize_host_in_file(host):
+    h = (host or "").strip().lower()
+    if not h or "*" in h or "?" in h:
+        return False
+    existing = _load_authorized_hosts()
+    if h in existing:
+        return True
+    path = _authorized_targets_path()
+    try:
+        needs_nl = os.path.exists(path) and os.path.getsize(path) > 0
+        with open(path, "a", encoding="utf-8") as fh:
+            if needs_nl:
+                fh.write("\n")
+            fh.write(h + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _detect_cloud_provider_from_host_or_headers(host, headers_map=None):
+    """Identify Cloudflare, Vercel, or AWS from hostname and HTTP response headers."""
+    h = (host or "").lower()
+    hdrs = {str(k).lower(): str(v) for k, v in (headers_map or {}).items()}
+    server = hdrs.get("server", "").lower()
+    providers = []
+    pops = []
+
+    # 1. Cloudflare detection
+    if (
+        "cf-ray" in hdrs
+        or "cf-cache-status" in hdrs
+        or "cloudflare" in server
+        or h.endswith((".workers.dev", ".pages.dev", ".cloudflare.com"))
+    ):
+        providers.append("cloudflare")
+        cf_ray = hdrs.get("cf-ray", "")
+        if "-" in cf_ray:
+            pops.append(f"CF:{cf_ray.rsplit('-', 1)[-1].strip()}")
+
+    # 2. Vercel (.vercel.app) detection
+    if (
+        "x-vercel-id" in hdrs
+        or "x-vercel-cache" in hdrs
+        or "vercel" in server
+        or h.endswith((".vercel.app", ".now.sh"))
+    ):
+        providers.append("vercel")
+        v_id = hdrs.get("x-vercel-id", "")
+        if v_id:
+            region_part = v_id.split("::")[0].strip() if "::" in v_id else v_id.split("-")[0].strip()
+            if region_part:
+                pops.append(f"Vercel:{region_part}")
+
+    # 3. AWS (CloudFront / ALB / API Gateway / App Runner / Lambda URL) detection
+    if (
+        "x-amz-cf-id" in hdrs
+        or "x-amz-cf-pop" in hdrs
+        or "cloudfront" in hdrs.get("via", "").lower()
+        or "cloudfront" in hdrs.get("x-cache", "").lower()
+        or h.endswith(".cloudfront.net")
+    ):
+        providers.append("aws-cloudfront")
+        cf_pop = hdrs.get("x-amz-cf-pop", "").strip()
+        if cf_pop:
+            pops.append(f"CloudFront:{cf_pop}")
+    if (
+        "x-amzn-requestid" in hdrs
+        or "x-amzn-trace-id" in hdrs
+        or "x-amz-apigw-id" in hdrs
+        or "awselb" in hdrs.get("set-cookie", "").lower()
+        or h.endswith((".amazonaws.com", ".awsapprunner.com", ".on.aws"))
+    ):
+        providers.append("aws-alb-apigw")
+
+    if not providers:
+        providers.append("origin/custom")
+    return providers, pops
 
 
 def _effective_rate(base_rate, profile, progress):
@@ -222,6 +312,14 @@ class _WorkerShard:
         "stage_counts",
         "stage_sum_ms",
         "stage_5xx_err",
+        "cache_hits",
+        "cache_misses",
+        "cache_dynamic",
+        "cache_bypass",
+        "waf_challenges",
+        "cf_52x_errors",
+        "serverless_throttles",
+        "edge_pops",
     )
 
     def __init__(self):
@@ -246,8 +344,29 @@ class _WorkerShard:
         self.stage_counts = [0, 0, 0, 0]
         self.stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
         self.stage_5xx_err = [0, 0, 0, 0]
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cache_dynamic = 0
+        self.cache_bypass = 0
+        self.waf_challenges = 0
+        self.cf_52x_errors = 0
+        self.serverless_throttles = 0
+        self.edge_pops = set()
 
-    def record(self, status, lat_ms, nbytes, err_flag, assert_ok, stage_idx, apdex_t):
+    def record(
+        self,
+        status,
+        lat_ms,
+        nbytes,
+        err_flag,
+        assert_ok,
+        stage_idx,
+        apdex_t,
+        cache_state="",
+        waf_challenged=False,
+        serverless_throttled=False,
+        pop_tag="",
+    ):
         self.count += 1
         self.bytes_read += nbytes
         self.sum_ms += lat_ms
@@ -271,6 +390,22 @@ class _WorkerShard:
         if not assert_ok:
             self.assert_fails += 1
 
+        if cache_state == "HIT":
+            self.cache_hits += 1
+        elif cache_state == "MISS":
+            self.cache_misses += 1
+        elif cache_state == "DYNAMIC":
+            self.cache_dynamic += 1
+        elif cache_state == "BYPASS":
+            self.cache_bypass += 1
+
+        if waf_challenged:
+            self.waf_challenges += 1
+        if serverless_throttled:
+            self.serverless_throttles += 1
+        if pop_tag and len(self.edge_pops) < 16:
+            self.edge_pops.add(pop_tag)
+
         if err_flag or status == 0:
             self.errors += 1
             self.stage_5xx_err[stage_idx] += 1
@@ -293,6 +428,8 @@ class _WorkerShard:
             self.s4xx += 1
         elif 500 <= status < 600:
             self.s5xx += 1
+            if 520 <= status <= 526:
+                self.cf_52x_errors += 1
             self.stage_5xx_err[stage_idx] += 1
         else:
             self.sother += 1
@@ -300,8 +437,14 @@ class _WorkerShard:
 
 class Hyperion(VibeTool):
     def __init__(self):
-        super().__init__("Hyperion", "14x Sharded Resilience, HDR Histogram & SLO Load Engine")
+        super().__init__("Hyperion", "14x Sharded Resilience, Cloud/Edge (Cloudflare/AWS/Vercel) & SLO Engine")
         self._tls_ctx = ssl.create_default_context()
+        # Explicitly advertise HTTP/1.1 in TLS ALPN so Cloudflare, Vercel (.vercel.app),
+        # and AWS CloudFront/ALB TLS 1.3 edges frame responses as HTTP/1.1 on raw sockets.
+        try:
+            self._tls_ctx.set_alpn_protocols(["http/1.1"])
+        except Exception:
+            pass
 
     @staticmethod
     def _build_weighted_ring(base_url, endpoints_csv):
@@ -343,32 +486,76 @@ class Hyperion(VibeTool):
             specs = [{"path": base_path, "weight": 1}]
         return ring, specs
 
-    def _probe_single_sync(self, scheme, host, port, path, method, headers_dict, timeout):
+    def _probe_single_sync(
+        self,
+        scheme,
+        connect_host,
+        port,
+        sni_host,
+        path,
+        method,
+        headers_dict,
+        timeout,
+        follow_redirects=False,
+    ):
         t0 = time.perf_counter()
-        conn = None
-        try:
-            if scheme == "https":
-                conn = http.client.HTTPSConnection(host, port or 443, timeout=timeout, context=self._tls_ctx)
-            else:
-                conn = http.client.HTTPConnection(host, port or 80, timeout=timeout)
-            conn.request(method, path, headers=headers_dict)
-            resp = conn.getresponse()
-            resp.read()
-            return resp.status, (time.perf_counter() - t0) * 1000.0
-        except Exception:
-            return 0, (time.perf_counter() - t0) * 1000.0
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+        cur_scheme = scheme
+        cur_connect_host = connect_host
+        cur_port = port
+        cur_sni = sni_host
+        cur_path = path
+        cur_headers = dict(headers_dict)
+        resp_headers = {}
+        status = 0
+
+        for _ in range(4 if follow_redirects else 1):
+            conn = None
+            try:
+                if cur_scheme == "https":
+                    raw_sock = socket.create_connection((cur_connect_host, cur_port or 443), timeout=timeout)
+                    raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    tls_sock = self._tls_ctx.wrap_socket(raw_sock, server_hostname=cur_sni or cur_connect_host)
+                    conn = http.client.HTTPConnection(cur_sni or cur_connect_host, cur_port or 443, timeout=timeout)
+                    conn.sock = tls_sock
+                else:
+                    conn = http.client.HTTPConnection(cur_connect_host, cur_port or 80, timeout=timeout)
+                conn.request(method, cur_path, headers=cur_headers)
+                resp = conn.getresponse()
+                resp.read()
+                status = resp.status
+                resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+                if follow_redirects and status in (301, 302, 307, 308) and "location" in resp_headers:
+                    loc = resp_headers["location"]
+                    u = urllib.parse.urlsplit(loc)
+                    if u.scheme in ("http", "https") and u.hostname:
+                        if u.hostname.lower() == (cur_sni or cur_connect_host).lower():
+                            cur_scheme = u.scheme.lower()
+                            cur_port = u.port
+                            cur_path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+                            continue
+                    elif loc.startswith("/"):
+                        cur_path = loc
+                        continue
+                break
+            except Exception:
+                status = 0
+                break
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        return status, (time.perf_counter() - t0) * 1000.0, resp_headers, cur_scheme, cur_port, cur_path
 
     async def _run_async_coro(
         self,
         scheme,
-        host,
+        connect_host,
         port,
+        sni_host,
+        host_header,
         ring_paths,
         profile,
         method,
@@ -390,9 +577,7 @@ class Hyperion(VibeTool):
         tripped = False
         has_macros = payload_template is not None and (b"{{" in payload_template)
         expect_bytes = expect_text.encode("utf-8") if expect_text else b""
-        host_header = f"{host}:{port}" if port else host
 
-        # Pre-build raw HTTP/1.1 request frames for the fast path (when no dynamic macros/cache-bust)
         extra_hdr_lines = "".join(
             f"{k}: {v}\r\n"
             for k, v in req_headers.items()
@@ -422,9 +607,10 @@ class Hyperion(VibeTool):
         async def open_stream():
             r, w = await asyncio.wait_for(
                 asyncio.open_connection(
-                    host,
+                    connect_host,
                     port or (443 if scheme == "https" else 80),
                     ssl=self._tls_ctx if scheme == "https" else None,
+                    server_hostname=(sni_host or host_header.split(":")[0]) if scheme == "https" else None,
                 ),
                 timeout=timeout,
             )
@@ -445,6 +631,10 @@ class Hyperion(VibeTool):
             content_length = None
             chunked = False
             conn_close = b"HTTP/1.0" in status_line
+            cache_state = ""
+            waf_challenged = False
+            serverless_throttled = 504 == status_code
+            pop_tag = ""
 
             while True:
                 hline = await asyncio.wait_for(reader.readline(), timeout=timeout)
@@ -460,6 +650,37 @@ class Hyperion(VibeTool):
                     chunked = True
                 elif lower_h.startswith(b"connection:") and b"close" in lower_h:
                     conn_close = True
+                elif lower_h.startswith((b"cf-cache-status:", b"x-vercel-cache:", b"x-cache:")):
+                    val = lower_h.split(b":", 1)[1].strip()
+                    if b"hit" in val or b"prerender" in val or b"stale" in val:
+                        cache_state = "HIT"
+                    elif b"miss" in val or b"expired" in val or b"revalidated" in val:
+                        cache_state = "MISS"
+                    elif b"dynamic" in val:
+                        cache_state = "DYNAMIC"
+                    elif b"bypass" in val:
+                        cache_state = "BYPASS"
+                elif lower_h.startswith((b"cf-mitigated:", b"x-vercel-mitigated:", b"x-amzn-waf-action:")):
+                    waf_challenged = True
+                elif lower_h.startswith((b"x-vercel-error:", b"x-amzn-errortype:")):
+                    val = lower_h.split(b":", 1)[1].strip()
+                    if any(k in val for k in (b"timeout", b"throttl", b"toomanyrequests", b"serviceunavailable")):
+                        serverless_throttled = True
+                    if b"forbidden" in val and status_code == 403:
+                        waf_challenged = True
+                elif not pop_tag and lower_h.startswith(b"cf-ray:"):
+                    val = hline.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                    if "-" in val:
+                        pop_tag = f"CF:{val.rsplit('-', 1)[-1]}"
+                elif not pop_tag and lower_h.startswith(b"x-vercel-id:"):
+                    val = hline.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                    region = val.split("::")[0].strip() if "::" in val else val.split("-")[0].strip()
+                    if region:
+                        pop_tag = f"Vercel:{region}"
+                elif not pop_tag and lower_h.startswith(b"x-amz-cf-pop:"):
+                    val = hline.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                    if val:
+                        pop_tag = f"CFPop:{val}"
 
             body_sample = b""
             nbytes = 0
@@ -495,7 +716,16 @@ class Hyperion(VibeTool):
                     body_sample = data
                 conn_close = True
 
-            return status_code, nbytes, body_sample, conn_close
+            return (
+                status_code,
+                nbytes,
+                body_sample,
+                conn_close,
+                cache_state,
+                waf_challenged,
+                serverless_throttled,
+                pop_tag,
+            )
 
         async def worker_task(w_id, shard):
             nonlocal stop_flag, tripped, global_seq
@@ -559,14 +789,27 @@ class Hyperion(VibeTool):
                     nbytes = 0
                     err_flag = False
                     assert_ok = True
+                    cache_state = ""
+                    waf_challenged = False
+                    serverless_throttled = False
+                    pop_tag = ""
 
-                    for attempt in range(2):
+                    for _attempt in range(2):
                         try:
                             if writer is None:
                                 reader, writer = await open_stream()
                             writer.write(frame)
                             await writer.drain()
-                            status_code, nbytes, body_sample, conn_close = await read_http_response(reader)
+                            (
+                                status_code,
+                                nbytes,
+                                body_sample,
+                                conn_close,
+                                cache_state,
+                                waf_challenged,
+                                serverless_throttled,
+                                pop_tag,
+                            ) = await read_http_response(reader)
                             if conn_close:
                                 writer.close()
                                 reader = writer = None
@@ -586,7 +829,19 @@ class Hyperion(VibeTool):
                             err_flag = True
 
                     lat_ms = (time.perf_counter() - t0) * 1000.0
-                    shard.record(status_code, lat_ms, nbytes, err_flag, assert_ok, stage_idx, apdex_t)
+                    shard.record(
+                        status_code,
+                        lat_ms,
+                        nbytes,
+                        err_flag,
+                        assert_ok,
+                        stage_idx,
+                        apdex_t,
+                        cache_state=cache_state,
+                        waf_challenged=waf_challenged,
+                        serverless_throttled=serverless_throttled,
+                        pop_tag=pop_tag,
+                    )
 
                     if circuit_breaker and shard.count >= 20 and (seq % 16 == 0):
                         tot_req = sum(s.count for s in shards)
@@ -641,6 +896,14 @@ class Hyperion(VibeTool):
         custom_headers=None,
         timeout_raw="5s",
         cache_bust=False,
+        edge_mode="auto",
+        follow_redirects=True,
+        sni_override="",
+        resolve_override="",
+        vercel_bypass="",
+        cf_access_id="",
+        cf_access_secret="",
+        aws_api_key="",
         expect_status=0,
         expect_text="",
         apdex_t=100.0,
@@ -666,37 +929,107 @@ class Hyperion(VibeTool):
         host = (parsed.hostname or "").lower()
         port = parsed.port
 
+        connect_host = (resolve_override or host).strip()
+        if ":" in connect_host and not connect_host.startswith("["):
+            ch_host, ch_port = connect_host.rsplit(":", 1)
+            if ch_port.isdigit():
+                connect_host = ch_host
+                port = int(ch_port)
+        sni_host = (sni_override or host).strip()
+
         ring_paths, specs = self._build_weighted_ring(target, endpoints_csv)
         payload_template = None
         if payload_path:
             with open(payload_path, "rb") as fh:
                 payload_template = fh.read()
 
+        if edge_mode == "origin-bypass":
+            cache_bust = True
+
         req_headers = {
-            "User-Agent": privacy_user_agent("Hyperion/2.0"),
+            "User-Agent": privacy_user_agent("Hyperion/2.1"),
             "Accept": "*/*",
         }
+        if edge_mode == "origin-bypass":
+            req_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            req_headers["Pragma"] = "no-cache"
+        elif edge_mode == "cdn-cache":
+            req_headers["Accept-Encoding"] = "gzip, deflate"
+
+        # Cloud Provider Protection Bypasses (Vercel, Cloudflare Access, AWS API Gateway)
+        v_secret = (vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "")).strip()
+        if v_secret:
+            req_headers["x-vercel-protection-bypass"] = v_secret
+            req_headers["x-vercel-set-bypass-cookie"] = "samesitenone"
+
+        cf_id = (cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID", "")).strip()
+        cf_sec = (cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET", "")).strip()
+        if cf_id and cf_sec:
+            req_headers["CF-Access-Client-Id"] = cf_id
+            req_headers["CF-Access-Client-Secret"] = cf_sec
+
+        aws_key = (aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY", "")).strip()
+        if aws_key:
+            req_headers["x-api-key"] = aws_key
+
         if payload_template is not None:
             req_headers["Content-Type"] = "application/json"
+
+        host_header = f"{host}:{port}" if (port and port not in (80, 443)) else host
         for raw_hdr in custom_headers or []:
             if ":" in raw_hdr:
                 k, v = raw_hdr.split(":", 1)
-                req_headers[k.strip()] = v.strip()
+                if k.strip().lower() == "host":
+                    host_header = v.strip()
+                else:
+                    req_headers[k.strip()] = v.strip()
 
-        pre_status, pre_lat_ms = self._probe_single_sync(
-            scheme, host, port, ring_paths[0], method, req_headers, timeout
+        req_headers["Host"] = host_header
+
+        (
+            pre_status,
+            pre_lat_ms,
+            pre_headers,
+            resolved_scheme,
+            resolved_port,
+            resolved_first_path,
+        ) = self._probe_single_sync(
+            scheme,
+            connect_host,
+            port,
+            sni_host,
+            ring_paths[0],
+            method,
+            req_headers,
+            timeout,
+            follow_redirects=follow_redirects,
+        )
+        if follow_redirects and (resolved_scheme != scheme or resolved_first_path != ring_paths[0]):
+            scheme = resolved_scheme
+            port = resolved_port
+            if len(ring_paths) == 1:
+                ring_paths = [resolved_first_path]
+                specs[0]["path"] = resolved_first_path
+
+        providers, pre_pops = _detect_cloud_provider_from_host_or_headers(host, pre_headers)
+        provider_str = "+".join(providers)
+
+        self.log(
+            f"Engine=Async-Sharded-HDR v2.1 | target={target} provider={provider_str} edge_mode={edge_mode} "
+            f"endpoints={len(specs)} profile={profile} method={method} duration={duration:.1f}s workers={workers} rate={rate_raw}"
         )
         self.log(
-            f"Engine=Async-Sharded-HDR v2.0 | target={target} endpoints={len(specs)} "
-            f"profile={profile} method={method} duration={duration:.1f}s workers={workers} rate={rate_raw}"
+            f"Preflight baseline: HTTP {pre_status} ({pre_lat_ms:.2f}ms) | "
+            f"PoP={','.join(pre_pops) if pre_pops else 'local/direct'} | Guard=VERIFIED"
         )
-        self.log(f"Preflight baseline: HTTP {pre_status} ({pre_lat_ms:.2f}ms) | Guard=VERIFIED")
 
         shards, elapsed, tripped = asyncio.run(
             self._run_async_coro(
                 scheme=scheme,
-                host=host,
+                connect_host=connect_host,
                 port=port,
+                sni_host=sni_host,
+                host_header=host_header,
                 ring_paths=ring_paths,
                 profile=profile,
                 method=method,
@@ -715,8 +1048,16 @@ class Hyperion(VibeTool):
             )
         )
         elapsed = max(0.001, elapsed)
-        post_status, post_lat_ms = self._probe_single_sync(
-            scheme, host, port, ring_paths[0], method, req_headers, timeout
+        post_status, post_lat_ms, post_headers, _, _, _ = self._probe_single_sync(
+            scheme,
+            connect_host,
+            port,
+            sni_host,
+            ring_paths[0],
+            method,
+            req_headers,
+            timeout,
+            follow_redirects=False,
         )
 
         # Merge lock-free worker shards
@@ -727,6 +1068,9 @@ class Hyperion(VibeTool):
         stage_counts = [0, 0, 0, 0]
         stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
         stage_5xx_err = [0, 0, 0, 0]
+        cache_hits = cache_misses = cache_dynamic = cache_bypass = 0
+        waf_challenges = cf_52x_errors = serverless_throttles = 0
+        edge_pops = set(pre_pops)
 
         for s in shards:
             if s.count == 0:
@@ -749,6 +1093,14 @@ class Hyperion(VibeTool):
             sum_sq_ms += s.sum_sq_ms
             apdex_sat += s.apdex_sat
             apdex_tol += s.apdex_tol
+            cache_hits += s.cache_hits
+            cache_misses += s.cache_misses
+            cache_dynamic += s.cache_dynamic
+            cache_bypass += s.cache_bypass
+            waf_challenges += s.waf_challenges
+            cf_52x_errors += s.cf_52x_errors
+            serverless_throttles += s.serverless_throttles
+            edge_pops.update(s.edge_pops)
             for i in range(4):
                 stage_counts[i] += s.stage_counts[i]
                 stage_sum_ms[i] += s.stage_sum_ms[i]
@@ -784,6 +1136,8 @@ class Hyperion(VibeTool):
         rps = total / elapsed
         err_pct = ((s5xx + errors) * 100.0 / total) if total > 0 else 0.0
         slowdown = (post_lat_ms / pre_lat_ms) if pre_lat_ms > 0 and post_lat_ms > 0 else 1.0
+        cache_classified = cache_hits + cache_misses + cache_dynamic + cache_bypass
+        cache_hit_pct = (cache_hits * 100.0 / cache_classified) if cache_classified > 0 else 0.0
 
         # 4-Stage breakdown & saturation knee detection
         stage_dur = max(elapsed / 4.0, 0.001)
@@ -843,8 +1197,13 @@ class Hyperion(VibeTool):
 
         self.log(
             f"Completed {total} req in {elapsed:.2f}s ({rps:.1f} RPS) | Apdex={apdex:.3f} | "
-            f"2xx={s2xx} 3xx={s3xx} 4xx={s4xx}(429:{s429}) 5xx={s5xx} err={errors} ({err_pct:.2f}%)",
+            f"2xx={s2xx} 3xx={s3xx} 4xx={s4xx}(429:{s429}) 5xx={s5xx}(CF52x:{cf_52x_errors}) err={errors} ({err_pct:.2f}%)",
             "pass" if not (tripped or slo_failed) else "crit",
+        )
+        self.log(
+            f"Edge/Cloud Telemetry: provider={provider_str} PoPs={','.join(sorted(edge_pops)) or 'local'} | "
+            f"Cache HIT={cache_hits} ({cache_hit_pct:.1f}%) MISS={cache_misses} DYN={cache_dynamic} BYPASS={cache_bypass} | "
+            f"WAF-Challenges={waf_challenges} Serverless-Throttles={serverless_throttles}"
         )
         self.log(
             f"HDR Latency ms: min={min_ms:.2f} avg={avg_ms:.2f} jitter(σ)={jitter_ms:.2f} "
@@ -864,12 +1223,15 @@ class Hyperion(VibeTool):
         knee_desc = f"{knee_rps:.1f} RPS" if knee_rps > 0 else "none (linear scaling maintained)"
 
         md_report = (
-            "\n## ⚡ Hyperion v2.0 Resilience, HDR & SLO Report\n\n"
+            "\n## ⚡ Hyperion v2.1 Cloud/Edge Resilience, HDR & SLO Report\n\n"
             f"- Target: `{sanitize_text(target)}` ({len(specs)} weighted endpoint(s))\n"
+            f"- Cloud / Edge Provider: `{provider_str}` | PoP(s): `{', '.join(sorted(edge_pops)) or 'local/direct'}` | Edge Mode: `{edge_mode}`\n"
             f"- Profile / Method / Workers: `{profile}` / `{method}` / `{workers}`\n"
             f"- Total Requests / Throughput: `{total}` (`{rps:.1f} RPS` over `{elapsed:.2f}s`)\n"
             f"- Apdex Score (T={apdex_t:.0f}ms): `{apdex:.3f}` | Saturation Knee: `{knee_desc}`\n"
-            f"- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / err): `{s2xx} / {s3xx} / {s4xx} / {s429} / {s5xx} / {errors}` (error/5xx rate: `{err_pct:.2f}%`)\n"
+            f"- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / CF-52x / err): `{s2xx} / {s3xx} / {s4xx} / {s429} / {s5xx} / {cf_52x_errors} / {errors}` (error/5xx rate: `{err_pct:.2f}%`)\n"
+            f"- Edge Cache (HIT / MISS / DYNAMIC / BYPASS): `{cache_hits} ({cache_hit_pct:.1f}%) / {cache_misses} / {cache_dynamic} / {cache_bypass}`\n"
+            f"- Edge Protection (WAF Challenges / Serverless Throttles): `{waf_challenges} / {serverless_throttles}`\n"
             f"- Latency min / avg / jitter(σ) / max: `{min_ms:.2f}ms / {avg_ms:.2f}ms / {jitter_ms:.2f}ms / {max_ms:.2f}ms`\n"
             f"- HDR Percentiles p50 / p75 / p90 / p95 / p99 / p99.9 / p99.99: `{p50:.2f}ms / {p75:.2f}ms / {p90:.2f}ms / {p95:.2f}ms / {p99:.2f}ms / {p999:.2f}ms / {p9999:.2f}ms`\n"
             f"- Pre/Post Recovery: `pre={pre_lat_ms:.2f}ms (HTTP {pre_status}) -> post={post_lat_ms:.2f}ms (HTTP {post_status}) [slowdown={slowdown:.2f}x]`\n"
@@ -891,10 +1253,13 @@ class Hyperion(VibeTool):
             os.makedirs(os.path.dirname(os.path.abspath(json_out)), exist_ok=True)
             metrics_doc = {
                 "engine": "hyperion-async-sharded-hdr",
-                "version": "2.0.0",
+                "version": "2.1.0",
                 "guard_verified": True,
                 "receipt_hmac": receipt_hmac,
                 "target": sanitize_text(target),
+                "cloud_providers": providers,
+                "edge_pops": sorted(edge_pops),
+                "edge_mode": edge_mode,
                 "endpoints": specs,
                 "profile": profile,
                 "method": method,
@@ -909,9 +1274,21 @@ class Hyperion(VibeTool):
                 "status_4xx": s4xx,
                 "status_429_ratelim": s429,
                 "status_5xx": s5xx,
+                "status_cloudflare_52x": cf_52x_errors,
                 "transport_errors": errors,
                 "assertion_failures": assert_fails,
                 "error_rate_pct": round(err_pct, 3),
+                "edge_cache": {
+                    "hits": cache_hits,
+                    "misses": cache_misses,
+                    "dynamic": cache_dynamic,
+                    "bypass": cache_bypass,
+                    "hit_rate_pct": round(cache_hit_pct, 2),
+                },
+                "edge_protection": {
+                    "waf_challenges": waf_challenges,
+                    "serverless_throttles": serverless_throttles,
+                },
                 "circuit_tripped": tripped,
                 "slo_failed": slo_failed,
                 "preflight_ms": round(pre_lat_ms, 2),
@@ -942,7 +1319,7 @@ class Hyperion(VibeTool):
 def _confirm_external(host, rate_desc, assume_yes=False):
     bar = "=" * 64
     print(bar)
-    print("  ⚠  HYPERION v2.0 EXTERNAL TARGET — ACTIVE LOAD TEST")
+    print("  ⚠  HYPERION v2.1 EXTERNAL / CLOUD TARGET — ACTIVE LOAD TEST")
     print(bar)
     print(f"  Host : {sanitize_text(host)}")
     print(f"  Rate : {rate_desc}")
@@ -959,9 +1336,9 @@ def _confirm_external(host, rate_desc, assume_yes=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Hyperion v2.0 - 14x Sharded Resilience, HDR Histogram & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
+        description="Hyperion v2.1 - 14x Sharded Resilience, Cloud/Edge (Cloudflare/AWS/Vercel) & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
     )
-    parser.add_argument("-t", "--target", "--url", dest="target", default="http://localhost:3456/", help="Target URL endpoint")
+    parser.add_argument("-t", "--target", "--url", dest="target", default="http://localhost:3456/", help="Target URL endpoint (e.g. https://my-app.vercel.app/)")
     parser.add_argument(
         "--endpoints",
         default="",
@@ -983,6 +1360,32 @@ def main(argv=None):
     parser.add_argument("--timeout", default="5s", help="Per-request timeout (default: 5s)")
     parser.add_argument("-g", "--guard", "--code", dest="guard", default="", help="Required authorization guard code")
     parser.add_argument("--cache-bust", action="store_true", help="Append per-request cache-busting query and sequence header")
+    # Cloud & Edge (Cloudflare, AWS, Vercel .vercel.app) options
+    parser.add_argument(
+        "--edge-mode",
+        choices=["auto", "cdn-cache", "origin-bypass"],
+        default="auto",
+        help="Cloud/CDN edge mode: 'auto', 'cdn-cache' (test edge cache), or 'origin-bypass' (bypass Cloudflare/CloudFront/Vercel cache to hit origin/serverless)",
+    )
+    parser.add_argument(
+        "--follow-redirects",
+        action="store_true",
+        default=True,
+        help="Follow canonical 301/302/307/308 redirects during preflight (default: enabled)",
+    )
+    parser.add_argument("--no-follow-redirects", dest="follow_redirects", action="store_false", help="Do not follow redirects during preflight")
+    parser.add_argument("--sni", default="", help="Custom TLS SNI hostname override (for Cloudflare/Vercel/AWS custom origins)")
+    parser.add_argument("--resolve", default="", help="Connect to a specific edge/origin IP or host[:port] while preserving Host & SNI")
+    parser.add_argument("--vercel-bypass", default="", help="Vercel Deployment Protection bypass secret (or set VERCEL_AUTOMATION_BYPASS_SECRET)")
+    parser.add_argument("--cf-access-id", default="", help="Cloudflare Access Client ID (or set CF_ACCESS_CLIENT_ID)")
+    parser.add_argument("--cf-access-secret", default="", help="Cloudflare Access Client Secret (or set CF_ACCESS_CLIENT_SECRET)")
+    parser.add_argument("--aws-api-key", default="", help="AWS API Gateway x-api-key value (or set AWS_API_GATEWAY_KEY)")
+    parser.add_argument(
+        "--trust-target",
+        action="store_true",
+        help="Automatically add the target hostname to authorized_targets.txt if you own it",
+    )
+    # Assertions, Apdex & SLO gates
     parser.add_argument("--expect-status", type=int, default=0, help="Expected HTTP status code assertion")
     parser.add_argument("--expect-text", default="", help="Substring assertion required in response body")
     parser.add_argument("--apdex-t", type=float, default=100.0, help="Apdex satisfactory latency threshold T in ms (default: 100)")
@@ -997,7 +1400,7 @@ def main(argv=None):
     parser.add_argument("--report-file", default="", help="Optional Markdown report path")
     parser.add_argument("--json-out", default="", help="Optional JSON metrics output path")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip interactive hostname prompt for trusted external hosts")
-    parser.add_argument("-v", "--version", action="version", version="Hyperion 2.0.0")
+    parser.add_argument("-v", "--version", action="version", version="Hyperion 2.1.0")
     args = parser.parse_args(argv)
 
     # 1. Enforce mandatory guard code XXLMILLEAMEAN
@@ -1007,7 +1410,14 @@ def main(argv=None):
         return 2
 
     # 2. Validate URL & target scope
-    parsed = urllib.parse.urlparse(args.target)
+    target_url = args.target.strip()
+    if "://" not in target_url and target_url:
+        # Convenience for cloud domains like my-app.vercel.app -> default to https:// for external, http:// for local
+        first_host = target_url.split("/")[0].split(":")[0].lower()
+        default_scheme = "http" if _is_local_or_private(first_host) else "https"
+        target_url = f"{default_scheme}://{target_url}"
+
+    parsed = urllib.parse.urlparse(target_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         print(f"[-] Invalid target URL: {sanitize_text(args.target)}")
         return 2
@@ -1020,9 +1430,12 @@ def main(argv=None):
         return 2
 
     if not _is_local_or_private(host):
+        if args.trust_target:
+            if _authorize_host_in_file(host):
+                print(f"[+] Added owned cloud/external target '{sanitize_text(host)}' to authorized_targets.txt")
         if host not in _load_authorized_hosts():
             print(f"[-] Refusing external target '{sanitize_text(host)}': not in authorized_targets.txt.")
-            print(f"    Authorize a host you own first: python vibe.py trust add {host}")
+            print(f"    Authorize a host you own first: python vibe.py trust add {host} (or pass --trust-target)")
             return 2
         if parsed_rate <= 0 or parsed_rate > MAX_EXTERNAL_RPS:
             print(f"[-] Refusing unsafe public-host rate: {args.rate} ({parsed_rate:.2f} RPS).")
@@ -1031,7 +1444,7 @@ def main(argv=None):
         if args.workers > MAX_EXTERNAL_WORKERS:
             print(f"[-] Public-host workers ({args.workers}) exceed the {MAX_EXTERNAL_WORKERS} worker cap.")
             return 2
-        if not _confirm_external(host, rate_desc=f"{args.rate} ({args.profile})", assume_yes=args.yes):
+        if not _confirm_external(host, rate_desc=f"{args.rate} ({args.profile}, edge={args.edge_mode})", assume_yes=args.yes):
             print("[-] Aborted — external target confirmation did not match.")
             return 2
     else:
@@ -1039,7 +1452,7 @@ def main(argv=None):
             print(f"[-] Rate {parsed_rate:.0f} RPS exceeds local safety cap ({MAX_PRIVATE_RPS:.0f} RPS).")
             return 2
 
-    # 3. Choose Go engine if available and requested, else Python sharded async HDR engine
+    # 3. Choose Go engine if available and requested (unless Python-specific cloud resolve/edge options are used)
     go_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperion")
     has_go = bool(shutil.which("go")) and os.path.isfile(os.path.join(go_dir, "main.go"))
 
@@ -1047,11 +1460,31 @@ def main(argv=None):
         print("[-] Go toolchain not found; use --engine auto or --engine python.")
         return 2
 
-    if args.engine in ("auto", "go") and has_go:
+    # Forward cloud protection headers if Go engine is used
+    forwarded_headers = list(args.headers or [])
+    if args.edge_mode == "origin-bypass":
+        forwarded_headers.append("Cache-Control: no-cache, no-store, must-revalidate")
+        forwarded_headers.append("Pragma: no-cache")
+    if args.vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET"):
+        sec = (args.vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "")).strip()
+        forwarded_headers.append(f"x-vercel-protection-bypass: {sec}")
+        forwarded_headers.append("x-vercel-set-bypass-cookie: samesitenone")
+    if (args.cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID")) and (
+        args.cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET")
+    ):
+        cid = (args.cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID", "")).strip()
+        csec = (args.cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET", "")).strip()
+        forwarded_headers.append(f"CF-Access-Client-Id: {cid}")
+        forwarded_headers.append(f"CF-Access-Client-Secret: {csec}")
+    if args.aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY"):
+        akey = (args.aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY", "")).strip()
+        forwarded_headers.append(f"x-api-key: {akey}")
+
+    if args.engine == "go" or (args.engine == "auto" and has_go and not args.resolve and not args.sni):
         cmd = [
             "go", "run", ".",
             "--guard", GUARD_CODE,
-            "-t", args.target,
+            "-t", target_url,
             "-P", args.profile,
             "-m", args.method,
             "-r", str(args.rate),
@@ -1066,7 +1499,7 @@ def main(argv=None):
             cmd += ["--endpoints", args.endpoints]
         if args.payload:
             cmd += ["-p", args.payload]
-        if args.cache_bust:
+        if args.cache_bust or args.edge_mode == "origin-bypass":
             cmd.append("--cache-bust")
         if args.expect_status > 0:
             cmd += ["--expect-status", str(args.expect_status)]
@@ -1086,12 +1519,12 @@ def main(argv=None):
             cmd += ["--report-file", os.path.abspath(args.report_file)]
         if args.json_out:
             cmd += ["--json-out", os.path.abspath(args.json_out)]
-        for h in args.headers or []:
+        for h in forwarded_headers:
             cmd += ["-H", h]
         return subprocess.run(cmd, cwd=go_dir).returncode
 
     return Hyperion().run_python_engine(
-        target=args.target,
+        target=target_url,
         endpoints_csv=args.endpoints,
         profile=args.profile,
         method=args.method.upper(),
@@ -1102,6 +1535,14 @@ def main(argv=None):
         custom_headers=args.headers,
         timeout_raw=args.timeout,
         cache_bust=args.cache_bust,
+        edge_mode=args.edge_mode,
+        follow_redirects=args.follow_redirects,
+        sni_override=args.sni,
+        resolve_override=args.resolve,
+        vercel_bypass=args.vercel_bypass,
+        cf_access_id=args.cf_access_id,
+        cf_access_secret=args.cf_access_secret,
+        aws_api_key=args.aws_api_key,
         expect_status=args.expect_status,
         expect_text=args.expect_text,
         apdex_t=args.apdex_t,

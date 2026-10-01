@@ -81,18 +81,25 @@ type config struct {
 }
 
 type liveCounters struct {
-	total       atomic.Int64
-	status2xx   atomic.Int64
-	status3xx   atomic.Int64
-	status4xx   atomic.Int64
-	status429   atomic.Int64
-	status5xx   atomic.Int64
-	statusOther atomic.Int64
-	errors      atomic.Int64
-	assertFails atomic.Int64
-	bytes       atomic.Int64
-	sumMicros   atomic.Int64
-	tripped     atomic.Bool
+	total               atomic.Int64
+	status2xx           atomic.Int64
+	status3xx           atomic.Int64
+	status4xx           atomic.Int64
+	status429           atomic.Int64
+	status5xx           atomic.Int64
+	statusCF52x         atomic.Int64
+	statusOther         atomic.Int64
+	errors              atomic.Int64
+	assertFails         atomic.Int64
+	cacheHits           atomic.Int64
+	cacheMisses         atomic.Int64
+	cacheDynamic        atomic.Int64
+	cacheBypass         atomic.Int64
+	wafChallenges       atomic.Int64
+	serverlessThrottles atomic.Int64
+	bytes               atomic.Int64
+	sumMicros           atomic.Int64
+	tripped             atomic.Bool
 }
 
 type workerShard struct {
@@ -613,7 +620,7 @@ func run(cfg config) (int, error) {
 					if strings.Contains(targetURL, "?") {
 						sep = "&"
 					}
-					targetURL = fmt.Sprintf("%s%s_ cb=%d", targetURL, sep, seq)
+					targetURL = fmt.Sprintf("%s%s_cb=%d", targetURL, sep, seq)
 				}
 
 				bodyBytes := payloadTemplate
@@ -696,6 +703,26 @@ func run(cfg config) (int, error) {
 				_ = resp.Body.Close()
 				live.bytes.Add(nBytes)
 
+				// Inspect Cloudflare / Vercel / AWS CloudFront edge cache & WAF headers
+				cacheHdr := strings.ToLower(resp.Header.Get("CF-Cache-Status") + " " + resp.Header.Get("X-Vercel-Cache") + " " + resp.Header.Get("X-Cache"))
+				switch {
+				case strings.Contains(cacheHdr, "hit") || strings.Contains(cacheHdr, "prerender") || strings.Contains(cacheHdr, "stale"):
+					live.cacheHits.Add(1)
+				case strings.Contains(cacheHdr, "miss") || strings.Contains(cacheHdr, "expired") || strings.Contains(cacheHdr, "revalidated"):
+					live.cacheMisses.Add(1)
+				case strings.Contains(cacheHdr, "dynamic"):
+					live.cacheDynamic.Add(1)
+				case strings.Contains(cacheHdr, "bypass"):
+					live.cacheBypass.Add(1)
+				}
+				if resp.Header.Get("CF-Mitigated") != "" || resp.Header.Get("X-Vercel-Mitigated") != "" || resp.Header.Get("X-Amzn-Waf-Action") != "" {
+					live.wafChallenges.Add(1)
+				}
+				errHdr := strings.ToLower(resp.Header.Get("X-Vercel-Error") + " " + resp.Header.Get("X-Amzn-ErrorType"))
+				if resp.StatusCode == 504 || strings.Contains(errHdr, "timeout") || strings.Contains(errHdr, "throttl") || strings.Contains(errHdr, "toomanyrequests") {
+					live.serverlessThrottles.Add(1)
+				}
+
 				if cfg.expectStatus > 0 && resp.StatusCode != cfg.expectStatus {
 					assertOk = false
 				}
@@ -726,6 +753,9 @@ func run(cfg config) (int, error) {
 					live.status4xx.Add(1)
 				case st >= 500 && st < 600:
 					live.status5xx.Add(1)
+					if st >= 520 && st <= 526 {
+						live.statusCF52x.Add(1)
+					}
 					shard.stage5xxErr[stageIdx]++
 					checkCircuitBreaker(&live, cfg, stopNow)
 				default:

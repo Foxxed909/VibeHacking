@@ -203,6 +203,39 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"Hyperion v2.0 unit check errored: {e}")
 
+    # 1g. Cloudflare, AWS & Vercel (.vercel.app) edge support check ---------
+    checks += 1
+    try:
+        import cloud_scout  # noqa: E402
+        import hyperion  # noqa: E402
+
+        cf_p, cf_pops = hyperion._detect_cloud_provider_from_host_or_headers(
+            "app.example.com", {"cf-ray": "8ab123-LOS", "cf-cache-status": "HIT"}
+        )
+        vc_p, vc_pops = hyperion._detect_cloud_provider_from_host_or_headers(
+            "my-app.vercel.app", {"x-vercel-id": "iad1::sfo1-999", "x-vercel-cache": "HIT"}
+        )
+        aws_p, aws_pops = hyperion._detect_cloud_provider_from_host_or_headers(
+            "api.execute-api.us-east-1.amazonaws.com",
+            {"x-amz-cf-pop": "IAD89-P2", "x-amzn-requestid": "req-123"},
+        )
+        cs_stack, _ = cloud_scout.detect_cloud_stack(
+            "https://my-app.vercel.app",
+            {"cf-ray": "8ab123-LOS", "x-vercel-id": "iad1::123", "x-amz-cf-pop": "IAD89-P2"},
+        )
+        if (
+            "cloudflare" not in cf_p
+            or "vercel" not in vc_p
+            or "aws-cloudfront" not in aws_p
+            or "aws-alb-apigw" not in aws_p
+            or len(cs_stack) < 3
+        ):
+            failures.append(f"Cloud/Edge detection failed: cf={cf_p} vc={vc_p} aws={aws_p} cs={cs_stack}")
+        else:
+            print("[PASS] Cloudflare, AWS & Vercel (.vercel.app) edge provider & PoP detection")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Cloud/Edge detection check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [

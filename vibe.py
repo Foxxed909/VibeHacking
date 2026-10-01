@@ -564,8 +564,9 @@ def run_vibe():
 
     # Command: attack — full ordered kill-chain (every audit tool, then gated load phase)
     attack_parser = subparsers.add_parser("attack", help="Run every tool in phase order against a URL")
-    attack_parser.add_argument("url", help="Target URL (e.g. https://your-app.com/)")
+    attack_parser.add_argument("url", help="Target URL (e.g. https://your-app.vercel.app/)")
     attack_parser.add_argument("--skip-load", action="store_true", help="Skip the load/stress phase entirely")
+    attack_parser.add_argument("--trust-target", action="store_true", help="Authorize this owned host in authorized_targets.txt for the load phase")
     attack_parser.add_argument("--yes", action="store_true", help="Skip the external-target confirmation for the load phase")
 
     # Command: report
@@ -694,7 +695,13 @@ def run_vibe():
     multi_hyperion.add_argument("-d", "--duration", default="", help="Test duration, e.g. 10s")
     multi_hyperion.add_argument("-r", "--rate", default="", help="Target rate. Default rate mode splits this total across targets.")
     multi_hyperion.add_argument("-w", "--workers", default="", help="Worker count. Default worker mode splits this total across targets.")
-    multi_hyperion.add_argument("-P", "--profile", default="constant", choices=("constant", "ramp", "step", "spike"), help="Load profile")
+    multi_hyperion.add_argument(
+        "-P",
+        "--profile",
+        default="constant",
+        choices=("constant", "ramp", "step", "spike", "sawtooth", "stress-knee"),
+        help="Load profile",
+    )
     multi_hyperion.add_argument("--endpoints", default="", help="Comma-separated subpaths on each target")
     multi_hyperion.add_argument("--rate-mode", choices=("total", "per-target"), default="total", help="Treat -r as total budget or per-target budget")
     multi_hyperion.add_argument("--worker-mode", choices=("total", "per-target"), default="total", help="Treat -w as total workers or per-target workers")
@@ -760,31 +767,45 @@ def run_vibe():
         return _run_multi(args)
 
     if args.command == "scan":
-        print(f"[*] Starting Real-World Audit of {sanitize_text(args.url)}...")
-        
+        url = args.url.strip()
+        if "://" not in url and url:
+            first_host = _normalize_host(url)
+            url = f"{'http' if _is_local_or_private(first_host) else 'https'}://{url}"
+
+        print(f"[*] Starting Real-World Audit of {sanitize_text(url)}...")
+
         # Save current target to session
-        _write_session(args.url)
+        _write_session(url)
 
         # Chain together multiple tools for a "Deep Scan"
         print("[*] Phase 1: Domain Recon (Ash)...")
-        run_tool(["TOOLS/ash.py", "--url", args.url])
+        run_tool(["TOOLS/ash.py", "--url", url])
 
-        print("[*] Phase 2: Header Security Audit...")
-        run_tool(["TOOLS/vibe_headers.py", "--url", args.url])
+        print("[*] Phase 2: Cloud & Edge Architecture Prober (Cloudflare / AWS / Vercel)...")
+        run_tool(["TOOLS/cloud_scout.py", "--url", url])
 
-        print("[*] Phase 3: Hidden Asset Discovery (Ghost)...")
-        run_tool(["TOOLS/ghost.py", "--url", args.url])
+        print("[*] Phase 3: Header Security Audit...")
+        run_tool(["TOOLS/vibe_headers.py", "--url", url])
 
-        print("[*] Phase 4: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", "--url", args.url])
-        
+        print("[*] Phase 4: Hidden Asset Discovery (Ghost)...")
+        run_tool(["TOOLS/ghost.py", "--url", url])
+
+        print("[*] Phase 5: Logic Flow Audit (Leep)...")
+        run_tool(["TOOLS/leep.py", "--url", url])
+
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 
     elif args.command == "attack":
-        url = args.url
+        url = args.url.strip()
+        if "://" not in url and url:
+            first_host = _normalize_host(url)
+            url = f"{'http' if _is_local_or_private(first_host) else 'https'}://{url}"
         host = _normalize_host(url)
         print(f"[*] Full-spectrum attack run against {sanitize_text(url)}")
         print(f"    Target host: {host or '(unparsed)'}")
+
+        if getattr(args, "trust_target", False) and host and not _is_local_or_private(host):
+            _add_trusted(host)
 
         _write_session(url)
 
