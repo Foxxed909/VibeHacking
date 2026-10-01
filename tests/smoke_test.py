@@ -323,8 +323,23 @@ def main():
             "https://example.com/api\nAPI_KEY=super-secret-value\n"
             "Authorization: Bearer abc.def.ghi\nPeek: DB_PASSWORD=hunter2"
         )
+        old_allowed = os.environ.get("VIBE_WORKER_ALLOWED_HOSTS")
+        try:
+            os.environ["VIBE_WORKER_ALLOWED_HOSTS"] = "app.example.com,api.example.com"
+            allow_ok = (
+                live_dashboard._remote_target_allowed("https://app.example.com/path")
+                and not live_dashboard._remote_target_allowed("https://sub.app.example.com/path")
+                and not live_dashboard._remote_target_allowed("https://evil.example/path")
+            )
+        finally:
+            if old_allowed is None:
+                os.environ.pop("VIBE_WORKER_ALLOWED_HOSTS", None)
+            else:
+                os.environ["VIBE_WORKER_ALLOWED_HOSTS"] = old_allowed
+
         ok_remote = (
             not (remote_names & forbidden)
+            and allow_ok
             and "vibe_headers" in remote_names
             and "corscan" in remote_names
             and spider_cmd[-2:] == ["--depth", "2"]
