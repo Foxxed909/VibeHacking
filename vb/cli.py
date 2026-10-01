@@ -15,6 +15,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 VIBE_COMMANDS = {
     "scan",
     "attack",
+    "bot",
     "report",
     "sarif",
     "privacy",
@@ -41,6 +42,7 @@ NON_RUNNABLE = {
 MENU_ITEMS = [
     ("Deep scan", "scan"),
     ("Full ordered attack chain", "attack"),
+    ("Bot Breaker ('Are you a robot?' solver)", "bot_breaker"),
     ("NoLoader availability window", "noloader"),
     ("Ash domain recon", "ash"),
     ("Spider attack-surface crawl", "spider"),

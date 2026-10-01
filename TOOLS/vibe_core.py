@@ -1,4 +1,5 @@
 import sys
+import http.cookiejar
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -61,10 +62,13 @@ DEFAULT_TOOL_TAXONOMY = {
     "jwt forge":        {"cwe": "CWE-347", "owasp": "A07:2021-Identification and Authentication Failures"},
     "openapi scout":    {"cwe": "CWE-200", "owasp": "API9:2023-Improper Inventory Management"},
     "smuggle probe":    {"cwe": "CWE-444", "owasp": "A05:2021-Security Misconfiguration"},
+    "bot breaker":      {"cwe": "CWE-807", "owasp": "A07:2021-Identification and Authentication Failures"},
 }
 
 WAF_CHALLENGE_PATTERNS = (
     "just a moment...",
+    "are you a robot",
+    "verify you are human",
     "cf-browser-verification",
     "_cf_chl_opt",
     "attention required! | cloudflare",
@@ -128,6 +132,7 @@ class VibeTool:
         self.findings_file = os.environ.get("VIBE_FINDINGS_FILE") or os.path.join(self.log_dir, "findings.jsonl")
         self.recorded_findings = []
         self._soft_404_signature = None
+        self._cookie_jar = http.cookiejar.CookieJar()
 
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir, exist_ok=True)
@@ -352,70 +357,121 @@ class VibeTool:
         else:
             headers = dict(headers)
 
-        if privacy_enabled():
+        # Inherit any zero-credential BotBreaker profile (headers + cookies) from vibe_session.json
+        surface = self.get_surface()
+        agent_profile = surface.get("agent_profile", {}) if isinstance(surface, dict) else {}
+        if isinstance(agent_profile, dict):
+            prof_hdrs = agent_profile.get("headers")
+            if isinstance(prof_hdrs, dict):
+                for pk, pv in prof_hdrs.items():
+                    headers.setdefault(pk, pv)
+            prof_cookies = agent_profile.get("cookies")
+            if isinstance(prof_cookies, dict) and prof_cookies and "Cookie" not in headers:
+                headers["Cookie"] = "; ".join(f"{ck}={cv}" for ck, cv in prof_cookies.items())
+
+        # Default to realistic zero-credential attacker browser persona (Chrome 128 + Client Hints)
+        # so Cloudflare/Vercel/AWS heuristic bot gates don't block tools on sight.
+        if os.environ.get("VIBE_SYNTHETIC_UA", "").strip() in ("1", "true", "yes"):
             headers.setdefault('User-Agent', privacy_user_agent(self.name))
-            headers.setdefault('DNT', '1')
-            headers.setdefault('Sec-GPC', '1')
         else:
             headers.setdefault(
                 'User-Agent',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
             )
+            headers.setdefault('Sec-CH-UA', '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"')
+            headers.setdefault('Sec-CH-UA-Mobile', '?0')
+            headers.setdefault('Sec-CH-UA-Platform', '"Windows"')
+            headers.setdefault('Accept-Language', 'en-US,en;q=0.9')
+            headers.setdefault('Sec-Fetch-Dest', 'document')
+            headers.setdefault('Sec-Fetch-Mode', 'navigate')
+            headers.setdefault('Sec-Fetch-Site', 'none')
+            headers.setdefault('Upgrade-Insecure-Requests', '1')
+
+        if privacy_enabled():
+            headers.setdefault('DNT', '1')
+            headers.setdefault('Sec-GPC', '1')
         headers.setdefault('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8')
 
-        # Optional enterprise grey-box & cloud-edge auth injection via environment variables
-        env_auth = os.environ.get("VIBE_AUTH_HEADER", "").strip()
-        if env_auth and ":" in env_auth:
-            k, v = env_auth.split(":", 1)
-            headers.setdefault(k.strip(), v.strip())
-        elif env_auth and "Authorization" not in headers:
-            headers["Authorization"] = env_auth
+        # Zero-Credential Black-Box Attacker Mode is ON by default (no API keys or access tokens).
+        # Internal keys are only injected if VIBE_USE_INTERNAL_KEYS=1 or VIBE_BLACKBOX_MODE=0 is set.
+        blackbox_mode = os.environ.get("VIBE_BLACKBOX_MODE", "1").strip().lower() not in ("0", "false", "off", "no")
+        use_internal_keys = os.environ.get("VIBE_USE_INTERNAL_KEYS", "").strip().lower() in ("1", "true", "yes", "on")
 
-        env_cookie = os.environ.get("VIBE_COOKIE", "").strip()
-        if env_cookie and "Cookie" not in headers:
-            headers["Cookie"] = env_cookie
+        if use_internal_keys or not blackbox_mode:
+            env_auth = os.environ.get("VIBE_AUTH_HEADER", "").strip()
+            if env_auth and ":" in env_auth:
+                k, v = env_auth.split(":", 1)
+                headers.setdefault(k.strip(), v.strip())
+            elif env_auth and "Authorization" not in headers:
+                headers["Authorization"] = env_auth
 
-        vercel_bypass = os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "").strip()
-        if vercel_bypass:
-            headers.setdefault("x-vercel-protection-bypass", vercel_bypass)
-            headers.setdefault("x-vercel-set-bypass-cookie", "samesitenone")
+            env_cookie = os.environ.get("VIBE_COOKIE", "").strip()
+            if env_cookie and "Cookie" not in headers:
+                headers["Cookie"] = env_cookie
 
-        cf_id = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip()
-        cf_sec = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip()
-        if cf_id and cf_sec:
-            headers.setdefault("CF-Access-Client-Id", cf_id)
-            headers.setdefault("CF-Access-Client-Secret", cf_sec)
+            vercel_bypass = os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "").strip()
+            if vercel_bypass:
+                headers.setdefault("x-vercel-protection-bypass", vercel_bypass)
+                headers.setdefault("x-vercel-set-bypass-cookie", "samesitenone")
 
-        aws_key = os.environ.get("AWS_API_GATEWAY_KEY", "").strip()
-        if aws_key:
-            headers.setdefault("x-api-key", aws_key)
+            cf_id = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip()
+            cf_sec = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip()
+            if cf_id and cf_sec:
+                headers.setdefault("CF-Access-Client-Id", cf_id)
+                headers.setdefault("CF-Access-Client-Secret", cf_sec)
 
-        try:
-            body = None
-            if data is not None:
-                if isinstance(data, bytes):
-                    body = data
-                elif isinstance(data, str):
-                    body = data.encode('utf-8')
-                else:
-                    body = json.dumps(data).encode('utf-8')
-                if 'Content-Type' not in headers:
-                    headers['Content-Type'] = 'application/json'
+            aws_key = os.environ.get("AWS_API_GATEWAY_KEY", "").strip()
+            if aws_key:
+                headers.setdefault("x-api-key", aws_key)
 
-            req = urllib.request.Request(url, method=method, data=body, headers=headers)
-            if follow_redirects:
-                ctx = urllib.request.urlopen(req, timeout=timeout)
+        body = None
+        if data is not None:
+            if isinstance(data, bytes):
+                body = data
+            elif isinstance(data, str):
+                body = data.encode('utf-8')
             else:
-                opener = urllib.request.build_opener(_NoRedirectHandler())
-                ctx = opener.open(req, timeout=timeout)
+                body = json.dumps(data).encode('utf-8')
+            if 'Content-Type' not in headers:
+                headers['Content-Type'] = 'application/json'
 
-            with ctx as response:
-                return response.getcode(), response.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(response.info())
-        except urllib.error.HTTPError as e:
+        def _do_open(req_headers):
+            req = urllib.request.Request(url, method=method, data=body, headers=req_headers)
+            handlers = [urllib.request.HTTPCookieProcessor(self._cookie_jar)]
+            if not follow_redirects:
+                handlers.append(_NoRedirectHandler())
+            opener = urllib.request.build_opener(*handlers)
             try:
-                err_body = e.read().decode('utf-8', errors='ignore')
-            except Exception:
-                err_body = ""
-            return e.code, err_body, _CaseInsensitiveHeaders(e.headers)
-        except Exception as e:
-            return 0, str(e), _CaseInsensitiveHeaders({})
+                with opener.open(req, timeout=timeout) as response:
+                    return (
+                        response.getcode(),
+                        response.read().decode('utf-8', errors='ignore'),
+                        _CaseInsensitiveHeaders(response.info()),
+                    )
+            except urllib.error.HTTPError as e:
+                try:
+                    err_body = e.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    err_body = ""
+                return e.code, err_body, _CaseInsensitiveHeaders(e.headers)
+            except Exception as e:
+                return 0, str(e), _CaseInsensitiveHeaders({})
+
+        status, resp_body, resp_headers = _do_open(headers)
+
+        # If blocked by a Cloudflare / WAF "Are you a robot?" HTML interstitial, automatically
+        # retry once with zero-credential AJAX/JSON content negotiation & cookie persistence.
+        if status in (403, 503) and self.is_waf_challenge(status, resp_body, resp_headers):
+            retry_headers = dict(headers)
+            retry_headers.update({
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            })
+            r_status, r_body, r_hdrs = _do_open(retry_headers)
+            if r_status != 0 and not self.is_waf_challenge(r_status, r_body, r_hdrs):
+                return r_status, r_body, r_hdrs
+
+        return status, resp_body, resp_headers

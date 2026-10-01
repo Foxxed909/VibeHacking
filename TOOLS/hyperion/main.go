@@ -642,8 +642,15 @@ func run(cfg config) (int, error) {
 					shard.stage5xxErr[stageIdx]++
 					continue
 				}
-				req.Header.Set("User-Agent", "Hyperion/2.0 authorized-security-test")
-				req.Header.Set("Accept", "*/*")
+				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+				req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
+				req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+				req.Header.Set("Sec-CH-UA", `"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"`)
+				req.Header.Set("Sec-CH-UA-Mobile", "?0")
+				req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
+				req.Header.Set("Sec-Fetch-Dest", "document")
+				req.Header.Set("Sec-Fetch-Mode", "navigate")
+				req.Header.Set("Sec-Fetch-Site", "none")
 				for k, v := range headerMap {
 					req.Header.Set(k, v)
 				}

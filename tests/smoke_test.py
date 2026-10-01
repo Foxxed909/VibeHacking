@@ -236,6 +236,47 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"Cloud/Edge detection check errored: {e}")
 
+    # 1h. Bot Breaker ('Are you a robot?' solver & zero-key bypass) check ---
+    checks += 1
+    try:
+        import bot_breaker  # noqa: E402
+        import hashlib  # noqa: E402
+
+        blocked, vendor, _ = bot_breaker.is_robot_interstitial(
+            403, "<html><title>Just a moment...</title></html>", {"cf-mitigated": "challenge"}
+        )
+        solved_form = bot_breaker.BotBreaker._solve_math_or_form_challenge(
+            "https://app.example.com/",
+            '<form action="/verify">What is 15 + 9? <input name="captcha_answer" value="">'
+            '<input type="checkbox" name="not_a_robot" value="1">'
+            '<input name="honeypot_field" value="trap"></form>',
+        )
+        pow_hash = hashlib.sha256(b"salt12342").hexdigest()
+        solved_pow = bot_breaker.BotBreaker._solve_altcha_pow(
+            {"salt": "salt123", "challenge": pow_hash, "maxnumber": 100}
+        )
+        shadows = bot_breaker.BotBreaker._discover_shadow_origins(
+            "https://app.example.com/",
+            '<script src="https://my-app-backend.vercel.app/_next/main.js"></script>',
+            {},
+        )
+        ok_bot = (
+            blocked
+            and "Cloudflare" in vendor
+            and solved_form is not None
+            and solved_form["fields"].get("captcha_answer") == "24"
+            and solved_form["fields"].get("honeypot_field") == ""
+            and solved_pow is not None
+            and solved_pow["number"] == 42
+            and "https://my-app-backend.vercel.app" in shadows
+        )
+        if not ok_bot:
+            failures.append(f"BotBreaker check failed: blocked={blocked} form={solved_form} pow={solved_pow} shadows={shadows}")
+        else:
+            print("[PASS] Bot Breaker solves 'Are you a robot?' math/PoW challenges & detects shadow origins")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"BotBreaker unit check errored: {e}")
+
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
     py_files += [

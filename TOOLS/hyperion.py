@@ -566,6 +566,7 @@ class Hyperion(VibeTool):
         req_headers,
         timeout,
         cache_bust,
+        spoof_ips,
         expect_status,
         expect_text,
         apdex_t,
@@ -756,7 +757,7 @@ class Hyperion(VibeTool):
                     path = ring_paths[local_seq % len(ring_paths)]
                     local_seq += workers
 
-                    if not cache_bust and not has_macros:
+                    if not cache_bust and not has_macros and not spoof_ips:
                         frame = static_frames[path]
                     else:
                         req_path = f"{path}{'&' if '?' in path else '?'}_cb={seq}" if cache_bust else path
@@ -777,6 +778,15 @@ class Hyperion(VibeTool):
                         )
                         if cache_bust:
                             head += f"X-Request-Sequence: {seq}\r\n"
+                        if spoof_ips:
+                            spoof_ip = f"198.51.{((seq >> 8) & 255)}.{(seq & 253) + 1}"
+                            head += (
+                                f"X-Forwarded-For: {spoof_ip}\r\n"
+                                f"X-Real-IP: {spoof_ip}\r\n"
+                                f"CF-Connecting-IP: {spoof_ip}\r\n"
+                                f"True-Client-IP: {spoof_ip}\r\n"
+                                f"X-Vercel-Forwarded-For: {spoof_ip}\r\n"
+                            )
                         if body_b:
                             head += f"Content-Length: {len(body_b)}\r\n\r\n"
                             frame = head.encode("latin-1", errors="ignore") + body_b
@@ -896,6 +906,8 @@ class Hyperion(VibeTool):
         custom_headers=None,
         timeout_raw="5s",
         cache_bust=False,
+        spoof_ips=False,
+        use_cloud_keys=False,
         edge_mode="auto",
         follow_redirects=True,
         sni_override="",
@@ -946,29 +958,54 @@ class Hyperion(VibeTool):
         if edge_mode == "origin-bypass":
             cache_bust = True
 
+        # Default to Zero-Credential Attacker Browser Persona (no API keys / no tokens)
         req_headers = {
-            "User-Agent": privacy_user_agent("Hyperion/2.1"),
-            "Accept": "*/*",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-CH-UA": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
         }
+
+        # Automatically inherit any zero-key BotBreaker persona/cookies from vibe_session.json
+        surface = self.get_surface()
+        agent_profile = surface.get("agent_profile", {}) if isinstance(surface, dict) else {}
+        if isinstance(agent_profile, dict):
+            prof_hdrs = agent_profile.get("headers")
+            if isinstance(prof_hdrs, dict):
+                for pk, pv in prof_hdrs.items():
+                    req_headers[pk] = pv
+            prof_cookies = agent_profile.get("cookies")
+            if isinstance(prof_cookies, dict) and prof_cookies:
+                req_headers["Cookie"] = "; ".join(f"{ck}={cv}" for ck, cv in prof_cookies.items())
+
         if edge_mode == "origin-bypass":
             req_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             req_headers["Pragma"] = "no-cache"
         elif edge_mode == "cdn-cache":
             req_headers["Accept-Encoding"] = "gzip, deflate"
 
-        # Cloud Provider Protection Bypasses (Vercel, Cloudflare Access, AWS API Gateway)
-        v_secret = (vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "")).strip()
+        # Zero-Credential Attacker Mode is default: only attach internal cloud keys if
+        # explicitly passed via CLI flag or --use-cloud-keys is enabled.
+        v_secret = (vercel_bypass or (os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "") if use_cloud_keys else "")).strip()
         if v_secret:
             req_headers["x-vercel-protection-bypass"] = v_secret
             req_headers["x-vercel-set-bypass-cookie"] = "samesitenone"
 
-        cf_id = (cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID", "")).strip()
-        cf_sec = (cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET", "")).strip()
+        cf_id = (cf_access_id or (os.environ.get("CF_ACCESS_CLIENT_ID", "") if use_cloud_keys else "")).strip()
+        cf_sec = (cf_access_secret or (os.environ.get("CF_ACCESS_CLIENT_SECRET", "") if use_cloud_keys else "")).strip()
         if cf_id and cf_sec:
             req_headers["CF-Access-Client-Id"] = cf_id
             req_headers["CF-Access-Client-Secret"] = cf_sec
 
-        aws_key = (aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY", "")).strip()
+        aws_key = (aws_api_key or (os.environ.get("AWS_API_GATEWAY_KEY", "") if use_cloud_keys else "")).strip()
         if aws_key:
             req_headers["x-api-key"] = aws_key
 
@@ -1040,6 +1077,7 @@ class Hyperion(VibeTool):
                 req_headers=req_headers,
                 timeout=timeout,
                 cache_bust=cache_bust,
+                spoof_ips=spoof_ips,
                 expect_status=expect_status,
                 expect_text=expect_text,
                 apdex_t=apdex_t,
@@ -1360,6 +1398,16 @@ def main(argv=None):
     parser.add_argument("--timeout", default="5s", help="Per-request timeout (default: 5s)")
     parser.add_argument("-g", "--guard", "--code", dest="guard", default="", help="Required authorization guard code")
     parser.add_argument("--cache-bust", action="store_true", help="Append per-request cache-busting query and sequence header")
+    parser.add_argument(
+        "--spoof-ips",
+        action="store_true",
+        help="Zero-credential attacker simulation: rotate spoofed X-Forwarded-For / CF-Connecting-IP / X-Real-IP headers per request",
+    )
+    parser.add_argument(
+        "--use-cloud-keys",
+        action="store_true",
+        help="Opt in to reading internal cloud bypass/API keys from environment variables (default: off / zero-key attacker mode)",
+    )
     # Cloud & Edge (Cloudflare, AWS, Vercel .vercel.app) options
     parser.add_argument(
         "--edge-mode",
@@ -1460,27 +1508,27 @@ def main(argv=None):
         print("[-] Go toolchain not found; use --engine auto or --engine python.")
         return 2
 
-    # Forward cloud protection headers if Go engine is used
+    # Forward cloud protection headers if Go engine is used (zero-key attacker mode by default)
     forwarded_headers = list(args.headers or [])
     if args.edge_mode == "origin-bypass":
         forwarded_headers.append("Cache-Control: no-cache, no-store, must-revalidate")
         forwarded_headers.append("Pragma: no-cache")
-    if args.vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET"):
+    if args.vercel_bypass or (args.use_cloud_keys and os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET")):
         sec = (args.vercel_bypass or os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "")).strip()
         forwarded_headers.append(f"x-vercel-protection-bypass: {sec}")
         forwarded_headers.append("x-vercel-set-bypass-cookie: samesitenone")
-    if (args.cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID")) and (
-        args.cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET")
+    if (args.cf_access_id or (args.use_cloud_keys and os.environ.get("CF_ACCESS_CLIENT_ID"))) and (
+        args.cf_access_secret or (args.use_cloud_keys and os.environ.get("CF_ACCESS_CLIENT_SECRET"))
     ):
         cid = (args.cf_access_id or os.environ.get("CF_ACCESS_CLIENT_ID", "")).strip()
         csec = (args.cf_access_secret or os.environ.get("CF_ACCESS_CLIENT_SECRET", "")).strip()
         forwarded_headers.append(f"CF-Access-Client-Id: {cid}")
         forwarded_headers.append(f"CF-Access-Client-Secret: {csec}")
-    if args.aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY"):
+    if args.aws_api_key or (args.use_cloud_keys and os.environ.get("AWS_API_GATEWAY_KEY")):
         akey = (args.aws_api_key or os.environ.get("AWS_API_GATEWAY_KEY", "")).strip()
         forwarded_headers.append(f"x-api-key: {akey}")
 
-    if args.engine == "go" or (args.engine == "auto" and has_go and not args.resolve and not args.sni):
+    if args.engine == "go" or (args.engine == "auto" and has_go and not args.resolve and not args.sni and not args.spoof_ips):
         cmd = [
             "go", "run", ".",
             "--guard", GUARD_CODE,
@@ -1535,6 +1583,8 @@ def main(argv=None):
         custom_headers=args.headers,
         timeout_raw=args.timeout,
         cache_bust=args.cache_bust,
+        spoof_ips=args.spoof_ips,
+        use_cloud_keys=args.use_cloud_keys,
         edge_mode=args.edge_mode,
         follow_redirects=args.follow_redirects,
         sni_override=args.sni,

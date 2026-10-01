@@ -69,7 +69,7 @@ MAX_EXTERNAL_MAELSTROM_RPS = 9999.99
 # Every listed tool runs non-interactively as: python TOOLS/<stem>.py --url <target>.
 # Load/stress tools are NOT here — they run separately behind the trust + confirm gate.
 ATTACK_PHASES = [
-    ("Recon & Discovery", ["ash", "spider", "ghost", "api_finder", "openapi_scout", "cloud_scout"]),
+    ("Recon & Discovery", ["bot_breaker", "ash", "spider", "ghost", "api_finder", "openapi_scout", "cloud_scout"]),
     ("Headers & Transport", ["vibe_headers", "corscan", "phantom", "header_inject", "smuggle_probe"]),
     ("Auth & Access Control", ["leep", "aukdoc", "jwt_forge", "axios", "random_roll"]),
     ("Injection & Input", ["authdoc", "fuzz_vibe", "biz_logic", "redirect",
@@ -655,6 +655,16 @@ def run_vibe():
         help="Arguments forwarded to Hyperion, e.g. --guard XXLMILLEAMEAN -t http://localhost:3456/ -d 10s -r 2000 --profile ramp",
     )
 
+    # Command: bot (Bot Breaker — AI-Agent "Are You a Robot?" Solver & Evasion Engine)
+    bot_parser = subparsers.add_parser(
+        "bot",
+        help="Run Bot Breaker to solve or bypass 'Are you a robot?' / Cloudflare challenges for AI agents & zero-key testing",
+    )
+    bot_parser.add_argument("url", help="Target URL (e.g. https://your-app.vercel.app/)")
+    bot_parser.add_argument("--fetch", action="store_true", help="Output clean response body for AI agents after bypassing/solving")
+    bot_parser.add_argument("--cookie", default="", help="Optional pre-harvested clearance cookie")
+    bot_parser.add_argument("--json-out", default="", help="Optional JSON profile output path")
+
     # Command: multi
     multi_parser = subparsers.add_parser("multi", help="Run scan/attack/maelstrom across local/private targets in parallel")
     multi_sub = multi_parser.add_subparsers(dest="multi_command")
@@ -754,7 +764,7 @@ def run_vibe():
     else:
         args = parser.parse_args(argv)
 
-    if args.command != "codex":
+    if args.command != "codex" and not (args.command == "bot" and getattr(args, "fetch", False)):
         print("================================")
         print(f" VIBE HACKING COMMAND CENTER v{VERSION}")
         print("================================")
@@ -777,7 +787,10 @@ def run_vibe():
         # Save current target to session
         _write_session(url)
 
-        # Chain together multiple tools for a "Deep Scan"
+        # Chain together multiple tools for a "Deep Scan" (Zero-Credential Attacker Mode)
+        print("[*] Phase 0: AI-Agent & Zero-Key Bot-Gate Breaker (Bot Breaker)...")
+        run_tool(["TOOLS/bot_breaker.py", "--url", url])
+
         print("[*] Phase 1: Domain Recon (Ash)...")
         run_tool(["TOOLS/ash.py", "--url", url])
 
@@ -991,6 +1004,16 @@ def run_vibe():
         print("[*] Launching Hyperion guarded resilience & SLO engine...")
         sys.stdout.flush()
         return run_tool(["TOOLS/hyperion.py", *forwarded]).returncode
+
+    elif args.command == "bot":
+        cmd = ["TOOLS/bot_breaker.py", "--url", args.url]
+        if args.fetch:
+            cmd.append("--fetch")
+        if args.cookie:
+            cmd += ["--cookie", args.cookie]
+        if args.json_out:
+            cmd += ["--json-out", args.json_out]
+        return run_tool(cmd).returncode
 
     elif args.command == "trust":
         if args.trust_action == "add":
