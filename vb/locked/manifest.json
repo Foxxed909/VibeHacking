@@ -8,6 +8,10 @@
     "maelstrom": {
       "reason": "high-rate load tester; only for localhost, private, or exact trusted hosts"
     },
+    "hyperion": {
+      "reason": "next-gen guarded resilience, multi-profile & SLO load engine (requires XXLMILLEAMEAN guard code)",
+      "guard_code": "XXLMILLEAMEAN"
+    },
     "vibe_api": {
       "reason": "JSON endpoint stressor"
     },

@@ -1,9 +1,12 @@
 import sys
 import urllib.request
 import urllib.parse
+import urllib.error
 import json
 import os
 import datetime
+import uuid
+import re
 
 from privacy_guard import privacy_enabled, privacy_user_agent, sanitize_data, sanitize_text
 
@@ -24,6 +27,56 @@ def _read_version():
 
 
 FRAMEWORK_VERSION = _read_version()
+
+# Default CWE & OWASP mappings per tool for enterprise compliance & SARIF reporting.
+DEFAULT_TOOL_TAXONOMY = {
+    "ash":              {"cwe": "CWE-200", "owasp": "A05:2021-Security Misconfiguration"},
+    "spider":           {"cwe": "CWE-200", "owasp": "A05:2021-Security Misconfiguration"},
+    "ghost":            {"cwe": "CWE-538", "owasp": "A05:2021-Security Misconfiguration"},
+    "api finder":       {"cwe": "CWE-200", "owasp": "API9:2023-Improper Inventory Management"},
+    "api check":        {"cwe": "CWE-200", "owasp": "API9:2023-Improper Inventory Management"},
+    "cloud scout":      {"cwe": "CWE-16",  "owasp": "A05:2021-Security Misconfiguration"},
+    "header auditor":   {"cwe": "CWE-693", "owasp": "A05:2021-Security Misconfiguration"},
+    "corscan":          {"cwe": "CWE-942", "owasp": "A05:2021-Security Misconfiguration"},
+    "phantom":          {"cwe": "CWE-614", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "header inject":    {"cwe": "CWE-113", "owasp": "A03:2021-Injection"},
+    "leep":             {"cwe": "CWE-285", "owasp": "A01:2021-Broken Access Control"},
+    "aukdoc":           {"cwe": "CWE-287", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "axios":            {"cwe": "CWE-639", "owasp": "API1:2023-Broken Object Level Authorization"},
+    "random roll":      {"cwe": "CWE-521", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "authdoc":          {"cwe": "CWE-20",  "owasp": "A03:2021-Injection"},
+    "fuzz vibe":        {"cwe": "CWE-20",  "owasp": "A03:2021-Injection"},
+    "biz logic":        {"cwe": "CWE-840", "owasp": "A04:2021-Insecure Design"},
+    "redirect":         {"cwe": "CWE-601", "owasp": "A01:2021-Broken Access Control"},
+    "traversal sniper": {"cwe": "CWE-22",  "owasp": "A01:2021-Broken Access Control"},
+    "ssrf probe":       {"cwe": "CWE-918", "owasp": "A10:2021-Server-Side Request Forgery"},
+    "prompt injector":  {"cwe": "CWE-1427","owasp": "LLM01:2025-Prompt Injection"},
+    "timebomb":         {"cwe": "CWE-208", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "exploit final":    {"cwe": "CWE-79",  "owasp": "A03:2021-Injection"},
+    "env probe":        {"cwe": "CWE-209", "owasp": "A05:2021-Security Misconfiguration"},
+    "senoria":          {"cwe": "CWE-798", "owasp": "A02:2021-Cryptographic Failures"},
+    "deep extract":     {"cwe": "CWE-200", "owasp": "LLM02:2025-Sensitive Information Disclosure"},
+    "key stealer":      {"cwe": "CWE-798", "owasp": "LLM02:2025-Sensitive Information Disclosure"},
+    "creditdrain":      {"cwe": "CWE-770", "owasp": "API4:2023-Unrestricted Resource Consumption"},
+    "jwt forge":        {"cwe": "CWE-347", "owasp": "A07:2021-Identification and Authentication Failures"},
+    "openapi scout":    {"cwe": "CWE-200", "owasp": "API9:2023-Improper Inventory Management"},
+    "smuggle probe":    {"cwe": "CWE-444", "owasp": "A05:2021-Security Misconfiguration"},
+}
+
+WAF_CHALLENGE_PATTERNS = (
+    "just a moment...",
+    "cf-browser-verification",
+    "_cf_chl_opt",
+    "attention required! | cloudflare",
+    "ddos-guard",
+    "akamai ghost",
+    "incapsula incident id",
+)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class _CaseInsensitiveHeaders(dict):
@@ -72,12 +125,15 @@ class VibeTool:
         self.version = FRAMEWORK_VERSION
         self.session_file = os.environ.get("VIBE_SESSION_FILE") or os.path.join(_root, "vibe_session.json")
         self.log_dir = os.environ.get("VIBE_LOG_DIR") or os.path.join(_root, "logs")
+        self.findings_file = os.environ.get("VIBE_FINDINGS_FILE") or os.path.join(self.log_dir, "findings.jsonl")
+        self.recorded_findings = []
+        self._soft_404_signature = None
 
         if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
+            os.makedirs(self.log_dir, exist_ok=True)
         session_dir = os.path.dirname(os.path.abspath(self.session_file))
         if session_dir and not os.path.exists(session_dir):
-            os.makedirs(session_dir)
+            os.makedirs(session_dir, exist_ok=True)
 
     def log(self, message, type="info"):
         prefix = {
@@ -100,9 +156,78 @@ class VibeTool:
         except (BrokenPipeError, ValueError):
             pass
 
-        filename = f"{self.name.lower()}_session.log"
-        with open(os.path.join(self.log_dir, filename), "a", encoding="utf-8") as f:
-            f.write(formatted_msg + "\n")
+        filename = f"{self.name.lower().replace(' ', '_')}_session.log"
+        # Preserve backward compatibility for existing tools whose log name used raw lower()
+        legacy_filename = f"{self.name.lower()}_session.log"
+        target_log = os.path.join(self.log_dir, legacy_filename)
+        try:
+            with open(target_log, "a", encoding="utf-8") as f:
+                f.write(formatted_msg + "\n")
+        except OSError:
+            pass
+
+        # Automatically capture high-signal findings into structured JSONL
+        # so SARIF / JUnit / Executive Dashboards have clean machine-readable records.
+        if type in ("crit", "hack"):
+            self._auto_record_from_log(message, "critical" if type == "crit" else "high")
+
+    def _auto_record_from_log(self, message, severity):
+        msg = str(message).strip()
+        # Skip generic summary footer lines when individual findings were already logged
+        lower = msg.lower()
+        if lower.startswith(("restrict access to these files", "the injected markup would execute")):
+            return
+        if re.match(r"^=+$", msg):
+            return
+        tax = DEFAULT_TOOL_TAXONOMY.get(self.name.lower(), {"cwe": "CWE-200", "owasp": "A05:2021"})
+        self.record_finding(
+            title=f"{self.name}: {msg[:100]}",
+            severity=severity,
+            evidence=msg,
+            cwe=tax["cwe"],
+            owasp=tax["owasp"],
+            _from_log=True,
+        )
+
+    def record_finding(
+        self,
+        title,
+        severity="medium",
+        location="",
+        evidence="",
+        recommendation="",
+        cwe="",
+        owasp="",
+        _from_log=False,
+    ):
+        """Record a structured security finding to logs/findings.jsonl for SARIF/CI/Reporting."""
+        tax = DEFAULT_TOOL_TAXONOMY.get(self.name.lower(), {"cwe": "CWE-200", "owasp": "A05:2021"})
+        sev_norm = str(severity).lower().strip()
+        if sev_norm not in ("critical", "high", "medium", "low", "info"):
+            sev_norm = "medium"
+
+        session = self.load_session()
+        target = location or session.get("target", "")
+
+        entry = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "tool": self.name,
+            "title": sanitize_text(title),
+            "severity": sev_norm,
+            "location": sanitize_text(target),
+            "evidence": sanitize_text(evidence or title),
+            "recommendation": sanitize_text(recommendation),
+            "cwe": cwe or tax.get("cwe", "CWE-200"),
+            "owasp": owasp or tax.get("owasp", "A05:2021"),
+            "auto_captured": bool(_from_log),
+        }
+        self.recorded_findings.append(entry)
+        try:
+            with open(self.findings_file, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass
+        return entry
 
     def banner(self):
         print("================================")
@@ -112,41 +237,165 @@ class VibeTool:
         sys.stdout.flush()
 
     def save_session(self, data):
-        with open(self.session_file, 'w') as f:
-            json.dump(sanitize_data(data), f, indent=4)
+        existing = self.load_session()
+        if isinstance(existing, dict) and isinstance(data, dict):
+            merged = dict(existing)
+            merged.update(data)
+        else:
+            merged = data
+        with open(self.session_file, 'w', encoding="utf-8") as f:
+            json.dump(sanitize_data(merged), f, indent=4)
 
     def load_session(self):
         if os.path.exists(self.session_file):
             try:
-                with open(self.session_file, 'r') as f:
+                with open(self.session_file, 'r', encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
 
-    def safe_request(self, url, method='GET', data=None, headers=None):
+    def update_surface(self, endpoints=None, forms=None, jwt_tokens=None, tech=None):
+        """Persist discovered attack-surface intelligence so downstream tools can chain."""
+        session = self.load_session()
+        surface = session.get("surface", {}) if isinstance(session, dict) else {}
+        if not isinstance(surface, dict):
+            surface = {}
+
+        if endpoints:
+            cur = list(surface.get("endpoints", []))
+            for ep in endpoints:
+                if ep and ep not in cur:
+                    cur.append(ep)
+            surface["endpoints"] = cur[:200]
+
+        if forms:
+            cur_forms = list(surface.get("forms", []))
+            for fm in forms:
+                if fm and fm not in cur_forms:
+                    cur_forms.append(fm)
+            surface["forms"] = cur_forms[:100]
+
+        if jwt_tokens:
+            cur_tokens = list(surface.get("jwt_tokens", []))
+            for tok in jwt_tokens:
+                if tok and tok not in cur_tokens:
+                    cur_tokens.append(tok)
+            surface["jwt_tokens"] = cur_tokens[:20]
+
+        if tech:
+            cur_tech = list(surface.get("tech", []))
+            for item in tech:
+                if item and item not in cur_tech:
+                    cur_tech.append(item)
+            surface["tech"] = cur_tech[:50]
+
+        if isinstance(session, dict):
+            session["surface"] = surface
+            try:
+                with open(self.session_file, "w", encoding="utf-8") as f:
+                    json.dump(sanitize_data(session), f, indent=4)
+            except OSError:
+                pass
+
+    def get_surface(self):
+        session = self.load_session()
+        if isinstance(session, dict) and isinstance(session.get("surface"), dict):
+            return session["surface"]
+        return {}
+
+    @staticmethod
+    def is_waf_challenge(status, body, headers=None):
+        """Return True if a response is a CDN/WAF interstitial challenge masquerading as content."""
+        headers = headers or {}
+        if str(headers.get("cf-mitigated", "")).lower() == "challenge":
+            return True
+        body_l = (body or "")[:4096].lower()
+        return any(pat in body_l for pat in WAF_CHALLENGE_PATTERNS)
+
+    def calibrate_soft_404(self, base_url):
+        """Probe a random nonexistent path to detect SPA catch-all 200 OK responses."""
+        canary_path = f"{base_url.rstrip('/')}/vibe-404-check-{uuid.uuid4().hex[:10]}"
+        status, body, headers = self.safe_request(canary_path, timeout=5)
+        if status == 200 and body:
+            norm = re.sub(r"\s+", " ", body[:2000]).strip()
+            self._soft_404_signature = {
+                "length": len(body),
+                "prefix": norm[:240],
+                "content_type": headers.get("Content-Type", ""),
+            }
+        else:
+            self._soft_404_signature = None
+        return self._soft_404_signature
+
+    def is_soft_404(self, status, body):
+        """Check whether a 200 response matches the target's soft-404 catch-all page."""
+        if status != 200 or not self._soft_404_signature or not body:
+            return False
+        norm = re.sub(r"\s+", " ", body[:2000]).strip()
+        sig = self._soft_404_signature
+        if norm[:240] == sig["prefix"]:
+            return True
+        if sig["length"] > 0 and abs(len(body) - sig["length"]) / float(sig["length"]) < 0.05:
+            if norm[:100] == sig["prefix"][:100]:
+                return True
+        return False
+
+    def safe_request(self, url, method='GET', data=None, headers=None, timeout=10, follow_redirects=True):
         if headers is None:
             headers = {}
         else:
             headers = dict(headers)
 
         if privacy_enabled():
-            headers['User-Agent'] = privacy_user_agent(self.name)
+            headers.setdefault('User-Agent', privacy_user_agent(self.name))
             headers.setdefault('DNT', '1')
             headers.setdefault('Sec-GPC', '1')
         else:
-            headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+            headers.setdefault(
+                'User-Agent',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            )
+        headers.setdefault('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8')
+
+        # Optional enterprise grey-box auth injection via environment variables
+        env_auth = os.environ.get("VIBE_AUTH_HEADER", "").strip()
+        if env_auth and ":" in env_auth:
+            k, v = env_auth.split(":", 1)
+            headers.setdefault(k.strip(), v.strip())
+        elif env_auth and "Authorization" not in headers:
+            headers["Authorization"] = env_auth
+
+        env_cookie = os.environ.get("VIBE_COOKIE", "").strip()
+        if env_cookie and "Cookie" not in headers:
+            headers["Cookie"] = env_cookie
 
         try:
-            body = json.dumps(data).encode('utf-8') if data else None
-            if body and 'Content-Type' not in headers:
-                headers['Content-Type'] = 'application/json'
+            body = None
+            if data is not None:
+                if isinstance(data, bytes):
+                    body = data
+                elif isinstance(data, str):
+                    body = data.encode('utf-8')
+                else:
+                    body = json.dumps(data).encode('utf-8')
+                if 'Content-Type' not in headers:
+                    headers['Content-Type'] = 'application/json'
 
             req = urllib.request.Request(url, method=method, data=body, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
+            if follow_redirects:
+                ctx = urllib.request.urlopen(req, timeout=timeout)
+            else:
+                opener = urllib.request.build_opener(_NoRedirectHandler())
+                ctx = opener.open(req, timeout=timeout)
+
+            with ctx as response:
                 return response.getcode(), response.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(response.info())
         except urllib.error.HTTPError as e:
-            return e.code, e.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(e.headers)
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                err_body = ""
+            return e.code, err_body, _CaseInsensitiveHeaders(e.headers)
         except Exception as e:
-            return 0, str(e), {}
+            return 0, str(e), _CaseInsensitiveHeaders({})

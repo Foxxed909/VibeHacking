@@ -13,32 +13,45 @@ class ApiFinder(VibeTool):
     def run(self, base_url):
         self.banner()
         self.log(f"Scanning for endpoints at: {base_url}")
+        self.calibrate_soft_404(base_url)
 
         endpoints = [
             'api.js', 'routes.js', 'server.js', 'controller.js',
             'api/', 'api/v1/', 'v1/api/', 'services/',
+            'api/config', 'api/debug', 'api/env', 'api/user', 'api/admin',
+            'api/health', 'api/status/full', 'graphql', 'openapi.json',
             'passwords/', 'vault/', 'auth/', 'db/'
         ]
 
         found = 0
+        discovered = []
 
         for endpoint in endpoints:
             url = f"{base_url.rstrip('/')}/{endpoint}"
             self.log(f"Checking: {endpoint}")
 
-            status, _, _ = self.safe_request(url, method='GET')
+            status, body, headers = self.safe_request(url, method='GET')
 
             if status == 200:
+                if self.is_waf_challenge(status, body, headers) or self.is_soft_404(status, body):
+                    continue
                 self.log(f"FOUND — {url}", "hack")
                 found += 1
+                discovered.append(url)
             elif status == 403:
                 self.log(f"Forbidden (exists but protected) — {endpoint}", "warn")
+            elif status == 401:
+                self.log(f"Auth required (exists) — {endpoint} (401)", "info")
+                discovered.append(url)
             elif status == 404:
                 pass
             elif status == 0:
                 self.log(f"Connection issue on {endpoint}", "fail")
             else:
                 self.log(f"Unusual response ({status}) on {endpoint}", "warn")
+
+        if discovered:
+            self.update_surface(endpoints=discovered)
 
         self.log("=" * 32)
         self.log(f"{found} endpoint(s) discovered" if found > 0 else "No exposed endpoints found",

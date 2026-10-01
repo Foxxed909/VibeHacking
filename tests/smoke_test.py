@@ -36,7 +36,6 @@ PY = sys.executable
 SKIP_RUNTIME = {
     "vibe_core.py",
     "privacy_guard.py",
-    "lmx.py",
     "add_version_flags.py",
 }
 
@@ -130,6 +129,52 @@ def main():
             print("[PASS] response headers look up case-insensitively")
     except Exception as e:  # noqa: BLE001
         failures.append(f"case-insensitive header check errored: {e}")
+
+    # 1d. Phantom JWT header alg:none & weak-secret detection ---------------
+    checks += 1
+    try:
+        import phantom  # noqa: E402
+        import jwt_forge  # noqa: E402
+
+        p = phantom.Phantom()
+        forged_none = jwt_forge._forge_jwt({"alg": "none", "typ": "JWT"}, {"sub": 1, "role": "admin"}, alg_mode="none")
+        forged_weak = jwt_forge._forge_jwt({"alg": "HS256", "typ": "JWT"}, {"sub": 1, "role": "admin"}, secret=b"secret")
+        issues_none = p._audit_jwt(forged_none)
+        issues_weak = p._audit_jwt(forged_weak)
+        has_none = any("alg:none" in msg for msg, _ in issues_none)
+        has_weak = any("weak/default secret" in msg for msg, _ in issues_weak)
+        if not (has_none and has_weak):
+            failures.append(f"Phantom JWT audit missed alg:none ({has_none}) or weak secret ({has_weak})")
+        else:
+            print("[PASS] Phantom detects JWT alg:none in header and weak HS256 secret")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"Phantom JWT check errored: {e}")
+
+    # 1e. SARIF 2.1.0 builder validation -----------------------------------
+    checks += 1
+    try:
+        import sarif_export  # noqa: E402
+
+        exporter = sarif_export.SarifExporter()
+        sarif_doc = exporter.build_sarif([
+            {
+                "tool": "JWT Forge",
+                "title": "JWT Authentication Bypass via alg:none",
+                "severity": "critical",
+                "location": "http://127.0.0.1:3456/api/admin",
+                "evidence": "200 OK",
+                "recommendation": "Reject alg:none",
+                "cwe": "CWE-347",
+                "owasp": "A07:2021",
+            }
+        ])
+        run0 = sarif_doc["runs"][0]
+        if sarif_doc.get("version") != "2.1.0" or len(run0.get("results", [])) != 1:
+            failures.append("SARIF 2.1.0 builder produced invalid structure")
+        else:
+            print("[PASS] SARIF 2.1.0 exporter builds valid schema")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"SARIF check errored: {e}")
 
     # 2. Compile-check every Python file -----------------------------------
     py_files = [os.path.join(ROOT, "vibe.py")]
@@ -283,6 +328,20 @@ def main():
         print("[PASS] python -m vb.cli routes multi")
 
     checks += 1
+    code, err = run(["-m", "vb.cli", "attack", "--help"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli attack --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli routes attack")
+
+    checks += 1
+    code, err = run(["-m", "vb.cli", "sarif", "--help"])
+    if code != 0:
+        failures.append(f"`python -m vb.cli sarif --help` exited {code}: {err.strip()[:200]}")
+    else:
+        print("[PASS] python -m vb.cli routes sarif")
+
+    checks += 1
     code, err = run(["-m", "vb.cli", "list", "--plain"])
     if code != 0:
         failures.append(f"`python -m vb.cli list --plain` exited {code}: {err.strip()[:200]}")
@@ -309,6 +368,27 @@ def main():
         failures.append("vibe.py maelstrom allowed an untrusted public host")
     else:
         print("[PASS] vibe.py maelstrom requires public hosts to be trusted")
+
+    checks += 1
+    code, err = run(["vibe.py", "hyperion", "-t", "http://127.0.0.1:1/", "-d", "1s", "-r", "10", "-w", "1", "--yes"])
+    if code == 0:
+        failures.append("vibe.py hyperion ran without XXLMILLEAMEAN guard code")
+    else:
+        print("[PASS] vibe.py hyperion refuses execution without XXLMILLEAMEAN guard code")
+
+    checks += 1
+    code, err = run(["vibe.py", "hyperion", "--guard", "WRONG_CODE", "-t", "http://127.0.0.1:1/", "-d", "1s", "--yes"])
+    if code == 0:
+        failures.append("vibe.py hyperion accepted an invalid guard code")
+    else:
+        print("[PASS] vibe.py hyperion rejects invalid guard codes")
+
+    checks += 1
+    code, err = run(["vibe.py", "hyperion", "--guard", "XXLMILLEAMEAN", "-t", "https://example.com", "-d", "1s", "-r", "10", "-w", "1", "--yes"])
+    if code == 0:
+        failures.append("vibe.py hyperion allowed an untrusted public host even with guard code")
+    else:
+        print("[PASS] vibe.py hyperion requires public hosts to be in authorized_targets.txt")
 
     checks += 1
     try:

@@ -98,6 +98,10 @@ class Spider(VibeTool):
             for method, action in sorted(set(forms)):
                 print(f"  [📝] {method:<5}  {action}")
 
+        self.update_surface(
+            endpoints=[e['url'] for e in surface if e['status'] < 404],
+            forms=[f"{m} {a}" for m, a in sorted(set(forms))],
+        )
         self.log(f"Total unique routes: {len(surface)} | Forms: {len(set(forms))}", "pass")
 
 

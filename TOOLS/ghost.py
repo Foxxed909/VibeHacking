@@ -30,12 +30,16 @@ class Ghost(VibeTool):
         ]
 
         found_count = 0
+        discovered = []
+        self.calibrate_soft_404(url)
 
         for item in wordlist:
             target = f"{url.rstrip('/')}/{item}"
             status, content, headers = self.safe_request(target, method='GET')
 
             if status == 200:
+                if self.is_waf_challenge(status, content, headers) or self.is_soft_404(status, content):
+                    continue
                 is_real = False
 
                 if item.endswith('/'):
@@ -50,6 +54,7 @@ class Ghost(VibeTool):
                 if is_real:
                     self.log(f"EXPOSED: {item}", "crit")
                     found_count += 1
+                    discovered.append(target)
                     if ".env" in item or "config" in item:
                         peek = content[:100] + ("..." if len(content) > 100 else "")
                         self.log(f"Peek: {peek}", "hack")
@@ -59,6 +64,8 @@ class Ghost(VibeTool):
             elif status == 401:
                 self.log(f"Unauthorized — {item} requires authentication", "warn")
 
+        if discovered:
+            self.update_surface(endpoints=discovered)
         self.log(f"Scan complete — {found_count} exposed asset(s) found", "info")
         if found_count > 0:
             self.log("Restrict access to these files or update .gitignore immediately", "crit")

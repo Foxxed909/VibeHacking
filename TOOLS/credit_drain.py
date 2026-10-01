@@ -85,6 +85,7 @@ class CreditDrain(VibeTool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--version', action='version', version='Tool 1.0.0')
     parser.add_argument("--url", required=True)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--concurrency", type=int, default=5)

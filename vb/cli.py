@@ -14,12 +14,16 @@ LOG_DIR = os.path.join(ROOT, "logs")
 
 VIBE_COMMANDS = {
     "scan",
+    "attack",
     "report",
+    "sarif",
     "privacy",
     "clean",
     "noloader",
+    "senoria",
     "storm",
     "maelstrom",
+    "hyperion",
     "multi",
     "trust",
     "status",
@@ -36,14 +40,18 @@ NON_RUNNABLE = {
 
 MENU_ITEMS = [
     ("Deep scan", "scan"),
+    ("Full ordered attack chain", "attack"),
     ("NoLoader availability window", "noloader"),
     ("Ash domain recon", "ash"),
     ("Spider attack-surface crawl", "spider"),
+    ("OpenAPI & GraphQL schema scout", "openapi_scout"),
     ("Header security audit", "vibe_headers"),
     ("Ghost sensitive asset finder", "ghost"),
     ("Leep auth-flow audit", "leep"),
+    ("JWT Forge cryptographic audit", "jwt_forge"),
     ("Storm URL check", "storm_check"),
     ("Report dashboard", "report"),
+    ("SARIF 2.1.0 & JUnit export", "sarif"),
     ("Privacy controls", "privacy"),
     ("Trusted target list", "trust_list"),
     ("Locked tools", "locked"),
@@ -102,11 +110,27 @@ def _log_locked_access(tool, allowed, detail):
         handle.write(line)
 
 
-def _confirm_locked(tool):
+def _confirm_locked(tool, forwarded_args=None):
     locked = _locked_tools()
     meta = locked.get(tool, {})
     reason = meta.get("reason", "high-impact authorized-testing tool")
-    phrase = "I OWN THIS TARGET"
+    phrase = meta.get("guard_code") or "I OWN THIS TARGET"
+    forwarded_args = list(forwarded_args or [])
+
+    # If the tool has a dedicated guard code and the caller already supplied it via CLI/env,
+    # let the tool's own constant-time guard check verify and log it without double-prompting.
+    if meta.get("guard_code"):
+        for idx, tok in enumerate(forwarded_args):
+            if tok in ("-g", "--guard", "--code") and idx + 1 < len(forwarded_args):
+                if forwarded_args[idx + 1] == phrase:
+                    _log_locked_access(tool, True, "cli_guard_code")
+                    return True
+            if tok.startswith(("--guard=", "--code=", "-g=")) and tok.split("=", 1)[1] == phrase:
+                _log_locked_access(tool, True, "cli_guard_code")
+                return True
+        if os.environ.get("VIBE_HYPERION_GUARD") == phrase or os.environ.get("VIBE_GUARD_CODE") == phrase:
+            _log_locked_access(tool, True, "env_guard_code")
+            return True
 
     print("=" * 64)
     print("LOCKED AUTHORIZED-ONLY TOOL")
@@ -145,8 +169,12 @@ def _route_vibe(args):
 
 def _run_tool(tool, args):
     help_only = any(arg in {"-h", "--help", "-v", "--version"} for arg in args)
-    if tool in _locked_tools() and not help_only and not _confirm_locked(tool):
+    if tool in _locked_tools() and not help_only and not _confirm_locked(tool, forwarded_args=args):
         return 2
+    if tool == "hyperion" and not help_only and not any(
+        a in ("-g", "--guard", "--code") or a.startswith(("--guard=", "--code=", "-g=")) for a in args
+    ):
+        args = ["--guard", "XXLMILLEAMEAN", *args]
 
     if tool in VIBE_COMMANDS:
         return _route_vibe([tool, *args])
@@ -294,11 +322,14 @@ def _interactive():
     if action == "scan":
         url = _prompt("Target URL")
         return _route_vibe(["scan", url]) if url else 2
+    if action == "attack":
+        url = _prompt("Target URL")
+        return _route_vibe(["attack", url]) if url else 2
     if action == "noloader":
         url = _prompt("Target URL")
         seconds = _prompt("Seconds", "60")
         return _route_vibe(["noloader", "-urlx", url, f"t-{seconds}"]) if url else 2
-    if action in {"ash", "spider", "vibe_headers", "ghost", "leep"}:
+    if action in {"ash", "spider", "openapi_scout", "vibe_headers", "ghost", "leep", "jwt_forge"}:
         url = _prompt("Target URL")
         return _run_tool(action, ["--url", url]) if url else 2
     if action == "storm_check":
@@ -306,6 +337,8 @@ def _interactive():
         return _route_vibe(["storm", url, "--url-check"]) if url else 2
     if action == "report":
         return _route_vibe(["report"])
+    if action == "sarif":
+        return _route_vibe(["sarif"])
     if action == "privacy":
         return _route_vibe(["privacy"])
     if action == "trust_list":

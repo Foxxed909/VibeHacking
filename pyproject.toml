@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibehacking"
+version = "1.0.0"
+description = "Self-hosted, zero-dependency black-box web, API, and LLM security pentest toolkit"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+vibe = "vb.cli:main"
+vbh = "vb.cli:main"
+vibe-hack = "vb.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vb*"]

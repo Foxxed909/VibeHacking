@@ -29,6 +29,8 @@ vb/__pycache__/
 
 # Compiled Go binary (build on demand)
 TOOLS/maelstrom/maelstrom
+TOOLS/hyperion/hyperion
+TOOLS/hyperion/hyperion.exe
 
 # NovaChat runtime-generated assets
 testapp/public/
