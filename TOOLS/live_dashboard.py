@@ -2,7 +2,7 @@
 """
 live_dashboard.py v2.0 — VibeAgent & BreakAgent Autonomous AI Security Platform + Live Command Center.
 
-Binds to 0.0.0.0:8080 by default for live browser preview compatibility.
+Binds to 127.0.0.1:8080 by default; pass --host 0.0.0.0 to expose it on your network.
 Provides:
   - pwn.ai-inspired Autonomous AI Pentesting & App-Breaking Platform
   - Mandatory Pre-Run Gate: Target App URL + 'I AM AUTHORIZED TO TEST THIS TARGET'
@@ -1048,7 +1048,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="VibeAgent & BreakAgent Platform + Live Web Command Center v2.0"
     )
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1; pass 0.0.0.0 to expose on your network)")
     parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
     parser.add_argument("--dump-json", action="store_true", help="Print JSON state and exit")
     parser.add_argument("-v", "--version", action="version", version="VibeHacking LiveDashboard 2.0.0")
@@ -1059,6 +1059,10 @@ def main(argv=None):
         return 0
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("VIBE_WORKER_TOKEN", "").strip():
+        print(f"[!] WARNING: binding to {args.host} exposes this control UI (and the agent-launch endpoint)")
+        print("    to every host that can reach this machine, with no worker token set. Set")
+        print("    VIBE_WORKER_TOKEN, or bind to 127.0.0.1, unless you intend network exposure.")
     print(f"[*] VibeAgent & BreakAgent Autonomous Platform listening on http://{args.host}:{args.port}")
     try:
         server.serve_forever()
