@@ -668,9 +668,9 @@ def run_vibe():
     # Command: dashboard (Live Web Command Center)
     dash_parser = subparsers.add_parser(
         "dashboard",
-        help="Launch the Live Web Command Center & VibeAgent/BreakAgent UI (binds to 0.0.0.0)",
+        help="Launch the Live Web Command Center & VibeAgent/BreakAgent UI (binds to 127.0.0.1 by default)",
     )
-    dash_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    dash_parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1; pass 0.0.0.0 to expose on your network)")
     dash_parser.add_argument("-p", "--port", type=int, default=8080, help="Listen port (default: 8080)")
     dash_parser.add_argument("--dump-json", action="store_true", help="Print current dashboard state JSON and exit")
 
@@ -1001,8 +1001,8 @@ def run_vibe():
             cmd += ["--url", args.url]
         if args.urls_file:
             cmd += ["--urls-file", args.urls_file]
-        if args.url_check:
-            cmd.append("--url-check")
+        if is_check:
+            cmd.append("--url-check")  # forward check intent for both --url-check and --urls-file
         if args.include_chat:
             cmd.append("--include-chat")
         if args.full_send:
