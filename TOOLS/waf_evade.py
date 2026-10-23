@@ -45,13 +45,11 @@ class WAFEvade(VibeTool):
         base = url.rstrip("/")
         self.log(f"Testing WAF & Rate-Limit Evasion on {base} (Zero-Key Attacker Mode)")
 
-        # Pick an active endpoint to test POST/GET mutations
         target_ep = f"{base}/api/guestbook"
         st_probe, _, _ = self.safe_request(target_ep, method="GET")
         if st_probe in (0, 404):
             target_ep = f"{base}/"
 
-        # Step 1: Send un-obfuscated canary payload to check if a WAF blocks raw attacks
         raw_st, raw_body, raw_hdrs = self.safe_request(
             target_ep,
             method="POST",
@@ -70,14 +68,23 @@ class WAFEvade(VibeTool):
                 "warn",
             )
 
-        # Step 2: Run 5 WAF Evasion Mutations
+        # FIX: 16KB padding vector was built as a raw f-string containing the canary payload,
+        # which has a single-quote in it: "<script>alert(1)</script>' UNION SELECT 1,2--"
+        # The ' broke the JSON string, producing invalid JSON that some parsers silently dropped.
+        # Now built with json.dumps() so all special characters are correctly escaped.
         padding_16k = "A" * 16_500
+        padded_body_json = json.dumps({
+            "pad": padding_16k,
+            "name": "vibe",
+            "text": RAW_CANARY_PAYLOAD,
+        })
+
         evasion_vectors = [
             (
                 "16kb_oversized_body_padding",
                 "POST",
                 target_ep,
-                f'{{"pad":"{padding_16k}","name":"vibe","text":"{RAW_CANARY_PAYLOAD}"}}',
+                padded_body_json,  # FIX: was a raw f-string with unescaped single-quote
                 {"Content-Type": "application/json"},
                 "16KB body filler before payload to exceed WAF 8KB/16KB body inspection window",
             ),
@@ -145,7 +152,6 @@ class WAFEvade(VibeTool):
                     )
                     bypasses += 1
 
-        # Step 3: Test IP Spoofing Rate-Limit Evasion
         self.log("Testing IP-Spoofing Rate-Limit Header Trust (X-Forwarded-For / CF-Connecting-IP / X-Vercel-Forwarded-For)...")
         rl_triggered = False
         for i in range(12):
