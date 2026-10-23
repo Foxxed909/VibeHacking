@@ -87,14 +87,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class _CaseInsensitiveHeaders(dict):
-    """HTTP response headers whose lookups ignore case.
-
-    HTTP header names are case-insensitive, but ``dict(response.info())`` keeps
-    whatever casing the server sent — and HTTP/2 front-ends and some CDNs send
-    them lowercased. Wrapping the result here lets tools look up
-    ``headers.get('Content-Security-Policy')`` and still find a
-    ``content-security-policy`` header. Iteration preserves the original casing.
-    """
+    """HTTP response headers whose lookups ignore case."""
 
     def __init__(self, source=None):
         super().__init__()
@@ -156,32 +149,30 @@ class VibeTool:
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         safe_message = sanitize_text(message)
         formatted_msg = f"[{timestamp}] {prefix} {safe_message}"
-        # Stay quiet if stdout is closed early (e.g. piped to `head` or `grep -q`)
-        # instead of crashing the tool with a BrokenPipeError traceback.
         try:
             print(formatted_msg)
             sys.stdout.flush()
         except (BrokenPipeError, ValueError):
             pass
 
-        filename = f"{self.name.lower().replace(' ', '_')}_session.log"
-        # Preserve backward compatibility for existing tools whose log name used raw lower()
-        legacy_filename = f"{self.name.lower()}_session.log"
-        target_log = os.path.join(self.log_dir, legacy_filename)
+        # FIX: was computing a normalized filename (spaces replaced with underscores)
+        # but then discarding it and using the un-normalized `legacy_filename` instead.
+        # Log files for tools like "JWT Forge" were saved as "jwt forge_session.log"
+        # (with a literal space), which breaks grep, tail, and ls glob patterns on all
+        # platforms. Now using the normalized form exclusively.
+        normalized_filename = f"{self.name.lower().replace(' ', '_')}_session.log"
+        target_log = os.path.join(self.log_dir, normalized_filename)
         try:
             with open(target_log, "a", encoding="utf-8") as f:
                 f.write(formatted_msg + "\n")
         except OSError:
             pass
 
-        # Automatically capture high-signal findings into structured JSONL
-        # so SARIF / JUnit / Executive Dashboards have clean machine-readable records.
         if type in ("crit", "hack"):
             self._auto_record_from_log(message, "critical" if type == "crit" else "high")
 
     def _auto_record_from_log(self, message, severity):
         msg = str(message).strip()
-        # Skip generic summary footer lines when individual findings were already logged
         lower = msg.lower()
         if lower.startswith(("restrict access to these files", "the injected markup would execute")):
             return
@@ -360,7 +351,6 @@ class VibeTool:
         else:
             headers = dict(headers)
 
-        # Inherit any zero-credential BotBreaker profile (headers + cookies) from vibe_session.json
         surface = self.get_surface()
         agent_profile = surface.get("agent_profile", {}) if isinstance(surface, dict) else {}
         if isinstance(agent_profile, dict):
@@ -372,8 +362,6 @@ class VibeTool:
             if isinstance(prof_cookies, dict) and prof_cookies and "Cookie" not in headers:
                 headers["Cookie"] = "; ".join(f"{ck}={cv}" for ck, cv in prof_cookies.items())
 
-        # Default to realistic zero-credential attacker browser persona (Chrome 128 + Client Hints)
-        # so Cloudflare/Vercel/AWS heuristic bot gates don't block tools on sight.
         if os.environ.get("VIBE_SYNTHETIC_UA", "").strip() in ("1", "true", "yes"):
             headers.setdefault('User-Agent', privacy_user_agent(self.name))
         else:
@@ -395,8 +383,6 @@ class VibeTool:
             headers.setdefault('Sec-GPC', '1')
         headers.setdefault('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8')
 
-        # Zero-Credential Black-Box Attacker Mode is ON by default (no API keys or access tokens).
-        # Internal keys are only injected if VIBE_USE_INTERNAL_KEYS=1 or VIBE_BLACKBOX_MODE=0 is set.
         blackbox_mode = os.environ.get("VIBE_BLACKBOX_MODE", "1").strip().lower() not in ("0", "false", "off", "no")
         use_internal_keys = os.environ.get("VIBE_USE_INTERNAL_KEYS", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -462,8 +448,6 @@ class VibeTool:
 
         status, resp_body, resp_headers = _do_open(headers)
 
-        # If blocked by a Cloudflare / WAF "Are you a robot?" HTML interstitial, automatically
-        # retry once with zero-credential AJAX/JSON content negotiation & cookie persistence.
         if status in (403, 503) and self.is_waf_challenge(status, resp_body, resp_headers):
             retry_headers = dict(headers)
             retry_headers.update({
