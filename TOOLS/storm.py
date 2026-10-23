@@ -25,11 +25,6 @@ def _is_local_target(url):
 
 
 def _load_authorized_hosts():
-    """Exact hostnames the operator authorized for stress testing.
-
-    Read from authorized_targets.txt, searched upward from this file. Wildcard
-    entries are ignored on purpose so the allowlist can never authorize a whole
-    platform (e.g. *.vercel.app)."""
     hosts = set()
     here = os.path.dirname(os.path.abspath(__file__))
     for _ in range(6):
@@ -160,21 +155,16 @@ def _check_url(target_url, timeout=8):
             "url": target_url,
             "status": exc.code,
             "latency_ms": (time.perf_counter() - started) * 1000,
-            "bytes_sampled": 0,
-            "title": "",
+            "bytes_sampled": 0, "title": "",
             "server": exc.headers.get("Server", ""),
             "content_type": exc.headers.get("Content-Type", ""),
             "error": "",
         }
     except Exception as exc:
         return {
-            "url": target_url,
-            "status": 0,
+            "url": target_url, "status": 0,
             "latency_ms": (time.perf_counter() - started) * 1000,
-            "bytes_sampled": 0,
-            "title": "",
-            "server": "",
-            "content_type": "",
+            "bytes_sampled": 0, "title": "", "server": "", "content_type": "",
             "error": str(exc),
         }
 
@@ -233,29 +223,42 @@ def run_url_check(urls, timeout):
     return 0
 
 
-def _build_plan(base_url, include_chat=False):
+def _build_plan(base_url, include_chat=False, surface_endpoints=None):
+    """
+    IMPROVEMENT: pull discovered endpoints from vibe_session.json surface state
+    so Storm exercises the actual attack surface, not just 6 hardcoded paths.
+    """
     plan = [
-        ("GET", _join_url(base_url, "/"), None),
-        ("GET", _join_url(base_url, "/index.html"), None),
-        ("GET", _join_url(base_url, "/dashboard.html"), None),
-        ("GET", _join_url(base_url, "/landing.html"), None),
-        ("GET", _join_url(base_url, "/api/config"), None),
+        ("GET",  _join_url(base_url, "/"), None),
+        ("GET",  _join_url(base_url, "/index.html"), None),
+        ("GET",  _join_url(base_url, "/dashboard.html"), None),
+        ("GET",  _join_url(base_url, "/landing.html"), None),
+        ("GET",  _join_url(base_url, "/api/config"), None),
         ("POST", _join_url(base_url, "/api/chat"), b"{bad-json"),
     ]
 
+    # Inject surface-discovered endpoints so Storm exercises real app paths
+    if surface_endpoints:
+        base_parsed = urllib.parse.urlparse(base_url)
+        for ep in surface_endpoints[:12]:
+            ep_parsed = urllib.parse.urlparse(ep)
+            path = ep_parsed.path or "/"
+            full = f"{base_parsed.scheme}://{base_parsed.netloc}{path}"
+            entry = ("GET", full, None)
+            if entry not in plan:
+                plan.append(entry)
+
     if include_chat:
-        plan.append(
-            (
-                "POST",
-                _join_url(base_url, "/api/chat"),
-                {
-                    "messages": [{"role": "user", "content": "VibeStorm ping"}],
-                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                    "persona": "default",
-                    "stream": False,
-                },
-            )
-        )
+        plan.append((
+            "POST",
+            _join_url(base_url, "/api/chat"),
+            {
+                "messages": [{"role": "user", "content": "VibeStorm ping"}],
+                "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                "persona": "default",
+                "stream": False,
+            },
+        ))
 
     return plan
 
@@ -273,13 +276,14 @@ def _confirm_external(host):
         return False
 
 
-def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, timeout, full_send, assume_yes=False):
+def run_storm(base_url, duration, entries_per_min, concurrency, include_chat,
+              timeout, full_send, ramp=False, assume_yes=False):
     tool = VibeTool("Storm", "Traffic Stressor")
     tool.banner()
 
     if not _is_authorized_target(base_url):
         tool.log("Refusing to run: target is not localhost and not in authorized_targets.txt.", "fail")
-        tool.log("Add a host you own (e.g. your-app.vercel.app) to authorized_targets.txt to stress-test it.", "info")
+        tool.log("Add a host you own (e.g. your-app.vercel.app) to authorized_targets.txt.", "info")
         return 2
     if not _is_local_target(base_url):
         tool.log("Authorized external target detected. Keep rates moderate; avoid --full-send on shared hosts.", "warn")
@@ -291,20 +295,40 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
     duration = max(1, int(duration))
     entries_per_min = max(1, int(entries_per_min))
     concurrency = max(1, int(concurrency))
-    interval = 0 if full_send else 60.0 / entries_per_min
+
+    # IMPROVEMENT: load surface endpoints from vibe_session.json
+    surface_endpoints = []
+    session_path = os.environ.get("VIBE_SESSION_FILE") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vibe_session.json"
+    )
+    if os.path.isfile(session_path):
+        try:
+            with open(session_path, "r", encoding="utf-8") as fh:
+                sess = json.load(fh)
+            surface_endpoints = sess.get("surface", {}).get("endpoints", [])[:12]
+        except Exception:
+            pass
+    if surface_endpoints:
+        tool.log(f"Loaded {len(surface_endpoints)} surface endpoint(s) from vibe_session.json", "info")
+
+    plan = _build_plan(base_url, include_chat=include_chat, surface_endpoints=surface_endpoints)
     total_budget = max(1, int(entries_per_min * (duration / 60.0)))
-    plan = _build_plan(base_url, include_chat=include_chat)
+
+    # IMPROVEMENT: ramp mode — gradually increases rate from 10% to 100% over the duration
+    # to find the saturation knee instead of slamming full concurrency immediately.
+    if ramp:
+        tool.log(
+            f"RAMP MODE: gradually ramping from 10% to 100% rate over {duration}s to locate saturation knee.",
+            "warn",
+        )
 
     tool.log(
         f"Target={base_url} duration={duration}s entries/min={entries_per_min} "
-        f"budget={'unbounded' if full_send else total_budget} concurrency={concurrency}"
+        f"budget={'unbounded' if full_send else total_budget} concurrency={concurrency} "
+        f"endpoints={len(plan)} ramp={ramp}"
     )
-    if full_send:
-        tool.log("Full-send mode enabled. Storm will submit as fast as workers free up.", "warn")
     if include_chat:
-        tool.log("Chat profile enabled. This may exercise upstream AI calls if the app has a key.", "warn")
-    else:
-        tool.log("Default profile avoids valid chat payloads to reduce API-credit risk.", "info")
+        tool.log("Chat profile enabled. May exercise upstream AI calls.", "warn")
 
     pre_status, pre_latency, pre_error = _request(base_url, timeout=timeout)
     if pre_status == 0:
@@ -314,23 +338,42 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
 
     results = []
     errors = {}
+    # IMPROVEMENT: per-endpoint breakdown dict
+    endpoint_stats = {}  # path → {"latencies": [], "statuses": []}
 
     def record_done(futures):
         pending = []
         for future in futures:
             if future.done():
-                status, latency, error = future.result()
+                status, latency, error, url = future.result()
                 results.append((status, latency))
                 if error:
                     errors[error] = errors.get(error, 0) + 1
+                path = urllib.parse.urlparse(url).path or "/"
+                if path not in endpoint_stats:
+                    endpoint_stats[path] = {"latencies": [], "statuses": []}
+                endpoint_stats[path]["latencies"].append(latency * 1000)
+                endpoint_stats[path]["statuses"].append(status)
             else:
                 pending.append(future)
         return pending
 
-    next_at = time.perf_counter()
     started = time.perf_counter()
     submitted = 0
 
+    def _ramp_interval(submitted_count):
+        """Decrease interval as ramp progresses — simulates gradual rate increase."""
+        if not ramp:
+            return 60.0 / entries_per_min
+        progress = min(1.0, (time.perf_counter() - started) / duration)
+        effective_rate = entries_per_min * (0.1 + 0.9 * progress)
+        return 60.0 / max(effective_rate, 1)
+
+    def _run_req(method, url, body):
+        status, latency, err = _request(url, method, body, timeout)
+        return status, latency, err, url
+
+    next_at = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = []
         while (full_send or submitted < total_budget) and time.perf_counter() - started < duration:
@@ -340,26 +383,29 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
                     futures, timeout=0.05, return_when=concurrent.futures.FIRST_COMPLETED
                 )
                 for future in done:
-                    status, latency, error = future.result()
+                    status, latency, error, url = future.result()
                     results.append((status, latency))
                     if error:
                         errors[error] = errors.get(error, 0) + 1
-                # Keep exactly the futures we haven't collected. Filtering on
-                # f.done() would silently drop any future that finishes between
-                # the wait() returning and this line, losing its result sample.
+                    path = urllib.parse.urlparse(url).path or "/"
+                    if path not in endpoint_stats:
+                        endpoint_stats[path] = {"latencies": [], "statuses": []}
+                    endpoint_stats[path]["latencies"].append(latency * 1000)
+                    endpoint_stats[path]["statuses"].append(status)
                 futures = list(not_done)
 
             method, url, body = plan[submitted % len(plan)]
-            futures.append(pool.submit(_request, url, method, body, timeout))
+            futures.append(pool.submit(_run_req, method, url, body))
             submitted += 1
             if not full_send:
+                interval = _ramp_interval(submitted)
                 next_at += interval
                 delay = next_at - time.perf_counter()
                 if delay > 0:
                     time.sleep(delay)
 
         for future in concurrent.futures.as_completed(futures):
-            status, latency, error = future.result()
+            status, latency, error, url = future.result()
             results.append((status, latency))
             if error:
                 errors[error] = errors.get(error, 0) + 1
@@ -375,23 +421,43 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
 
     rate = len(results) / elapsed
     p50 = statistics.median(latencies) if latencies else 0
+    # IMPROVEMENT: add standard deviation to latency stats
+    stdev = statistics.stdev(latencies) if len(latencies) > 1 else 0
     if latencies:
         ordered = sorted(latencies)
-        # Nearest-rank percentile, clamped so tiny samples don't index to -1
-        # (which used to return the max and over-report p95).
         idx = min(len(ordered) - 1, max(0, math.ceil(0.95 * len(ordered)) - 1))
         p95 = ordered[idx]
+        idx99 = min(len(ordered) - 1, max(0, math.ceil(0.99 * len(ordered)) - 1))
+        p99 = ordered[idx99]
     else:
-        p95 = 0
+        p95 = p99 = 0
     max_latency = max(latencies) if latencies else 0
 
     tool.log(f"Completed {len(results)} requests in {elapsed:.1f}s ({rate:.1f} req/s)")
     tool.log(f"Status counts: {statuses}")
-    tool.log(f"Latency ms: p50={p50:.1f} p95={p95:.1f} max={max_latency:.1f}")
+    # IMPROVEMENT: include stdev and p99
+    tool.log(f"Latency ms: p50={p50:.1f} p95={p95:.1f} p99={p99:.1f} stdev={stdev:.1f} max={max_latency:.1f}")
 
     if errors:
         top_errors = sorted(errors.items(), key=lambda item: item[1], reverse=True)[:5]
         tool.log(f"Transport errors: {top_errors}", "warn")
+
+    # IMPROVEMENT: per-endpoint breakdown
+    if len(endpoint_stats) > 1:
+        tool.log("--- Per-endpoint breakdown ---", "info")
+        for path, data in sorted(endpoint_stats.items()):
+            ep_lats = data["latencies"]
+            ep_sts = data["statuses"]
+            if not ep_lats:
+                continue
+            ep_p50 = statistics.median(ep_lats)
+            ep_5xx = sum(1 for s in ep_sts if s >= 500)
+            ep_err_pct = (ep_5xx / len(ep_sts)) * 100 if ep_sts else 0
+            level = "crit" if ep_err_pct > 20 else ("warn" if ep_err_pct > 5 else "info")
+            tool.log(
+                f"  {path}: {len(ep_lats)} req | p50={ep_p50:.1f}ms | 5xx={ep_5xx} ({ep_err_pct:.1f}%)",
+                level,
+            )
 
     if post_status == 0:
         tool.log(f"Post-stress health check failed: {post_error}", "crit")
@@ -409,33 +475,20 @@ def run_storm(base_url, duration, entries_per_min, concurrency, include_chat, ti
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Storm - Localhost Traffic Stressor")
-    parser.add_argument("--url", default="", help="Target URL. Stress mode allows localhost or hosts listed in authorized_targets.txt; defaults to http://localhost:3456/")
+    parser.add_argument("--url", default="", help="Target URL. Stress mode allows localhost or hosts listed in authorized_targets.txt.")
     parser.add_argument("--urls-file", default="", help="File containing one URL per line for --url-check")
-    parser.add_argument(
-        "--url-check",
-        action="store_true",
-        help="Run safe one-request-per-URL checks. Required for external URLs.",
-    )
+    parser.add_argument("--url-check", action="store_true", help="Run safe one-request-per-URL checks.")
     parser.add_argument("--duration", type=int, default=15, help="Stress duration in seconds")
     parser.add_argument("--entries-per-min", type=int, default=600, help="Request entries per minute")
     parser.add_argument("--concurrency", type=int, default=20, help="Maximum concurrent requests")
     parser.add_argument("--timeout", type=float, default=5, help="Per-request timeout in seconds")
-    parser.add_argument(
-        "--full-send",
-        action="store_true",
-        help="Ignore entries/min pacing and submit as fast as local workers free up.",
-    )
-    parser.add_argument(
-        "--include-chat",
-        action="store_true",
-        help="Also send valid /api/chat payloads. May consume API credits if a key is loaded.",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip the interactive external-target confirmation (for scripted runs you trust).",
-    )
-    parser.add_argument("-v", "--version", action="version", version="Storm 1.0.0")
+    parser.add_argument("--full-send", action="store_true", help="Ignore entries/min pacing and submit as fast as workers free up.")
+    parser.add_argument("--include-chat", action="store_true", help="Also send valid /api/chat payloads.")
+    # IMPROVEMENT: ramp mode flag
+    parser.add_argument("--ramp", action="store_true",
+                        help="Ramp mode: gradually increase rate from 10%% to 100%% over the duration to find the saturation knee.")
+    parser.add_argument("--yes", action="store_true", help="Skip the interactive external-target confirmation.")
+    parser.add_argument("-v", "--version", action="version", version="Storm 1.1.0")
     args = parser.parse_args()
 
     if args.url_check or args.urls_file:
@@ -450,6 +503,7 @@ if __name__ == "__main__":
             args.include_chat,
             args.timeout,
             args.full_send,
-            args.yes,
+            ramp=args.ramp,
+            assume_yes=args.yes,
         )
     )
