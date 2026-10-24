@@ -1,8 +1,9 @@
 import sys
 import os
 import argparse
-import time
 import statistics
+import time
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vibe_core import VibeTool
@@ -10,83 +11,137 @@ from vibe_core import VibeTool
 
 class TimeBomb(VibeTool):
     def __init__(self):
-        super().__init__("TimeBomb", "Timing Attack Detector")
+        super().__init__("TimeBomb", "Timing Attack Detector v2.0")
 
     def _measure(self, url, payload, rounds):
+        """Sequential measurement for timing accuracy — parallel would add scheduling noise."""
         times = []
         for _ in range(rounds):
-            start = time.perf_counter()
-            self.safe_request(url, method='POST', data=payload)
-            times.append((time.perf_counter() - start) * 1000)
-        return times
+            t0 = time.perf_counter()
+            self.safe_request(url, method='POST', data=payload, timeout=15)
+            times.append((time.perf_counter() - t0) * 1000)
+        return sorted(times)
+
+    def _stats(self, times):
+        if not times: return 0, 0, 0, 0
+        med = statistics.median(times)
+        avg = statistics.mean(times)
+        std = statistics.stdev(times) if len(times) > 1 else 0
+        return med, avg, std, max(times)
+
+    def _is_significant(self, delta_ms, stdev_a, stdev_b):
+        """
+        A timing delta is only meaningful if it exceeds 2× the pooled standard deviation.
+        delta > max(2 * pooled_stdev, 30ms) → real signal.
+        Without this, 151ms delta with stdev=200ms was reported as a confirmed leak.
+        """
+        pooled = (stdev_a + stdev_b) / 2
+        return delta_ms > max(2.0 * pooled, 30.0)
 
     def run(self, url, rounds, threshold_ms):
         self.banner()
         self.log(f"Probing timing side-channels on: {url}")
-        self.log(f"Rounds per probe: {rounds} | Leak threshold: {threshold_ms}ms")
+        self.log(f"Rounds: {rounds} | Threshold: {threshold_ms}ms | Significance: 2σ required")
 
-        probes = {
-            "Valid user / wrong password": {
-                "email": "admin@localhost.com",
-                "password": "definitly_wrong_xX99"
-            },
-            "Non-existent user": {
-                "email": "vibe_ghost_404@fake.invalid",
-                "password": "definitly_wrong_xX99"
-            },
-            "Empty credentials": {
-                "email": "",
-                "password": ""
-            },
-            "SQL injection in email": {
-                "email": "' OR 1=1--",
-                "password": "x"
-            },
+        login_probes = {
+            "Valid user / wrong password":  {"email": "admin@localhost.com",         "password": "definitly_wrong_xX99"},
+            "Non-existent user":            {"email": "vibe_ghost_404@fake.invalid",  "password": "definitly_wrong_xX99"},
+            "Empty credentials":            {"email": "",                             "password": ""},
+            "SQL injection email":          {"email": "' OR 1=1--",                  "password": "x"},
+            "SQLi SLEEP(3) probe":          {"email": "' OR SLEEP(3)--",              "password": "x"},
+            "SQLi WAITFOR probe":           {"email": "'; WAITFOR DELAY '0:0:3'--",   "password": "x"},
         }
 
         results = {}
-
-        for label, payload in probes.items():
+        for label, payload in login_probes.items():
             self.log(f"Measuring: {label} ({rounds} rounds)")
             times = self._measure(url, payload, rounds)
-            avg = statistics.mean(times)
-            med = statistics.median(times)
-            results[label] = {"avg": avg, "med": med, "times": times}
-            self.log(f"  avg={avg:.1f}ms  median={med:.1f}ms  min={min(times):.1f}ms  max={max(times):.1f}ms", "info")
+            med, avg, std, mx = self._stats(times)
+            results[label] = {"med": med, "avg": avg, "std": std, "max": mx}
+            self.log(f"  avg={avg:.1f}ms median={med:.1f}ms σ={std:.1f}ms max={mx:.1f}ms")
 
-        self.log("=" * 32)
-        self.log("Analyzing timing deltas between probes...")
+        self.log("=" * 50)
+        self.log("Analyzing timing deltas with 2σ significance gate...")
 
         baseline_label = "Non-existent user"
-        baseline = results[baseline_label]["med"]
-
+        baseline = results[baseline_label]
         leaks = 0
+
         for label, data in results.items():
-            if label == baseline_label:
-                continue
-            delta = abs(data["med"] - baseline)
-            if delta > threshold_ms:
+            if label == baseline_label: continue
+            delta = abs(data["med"] - baseline["med"])
+            sig   = self._is_significant(delta, data["std"], baseline["std"])
+            direction = "slower" if data["med"] > baseline["med"] else "faster"
+
+            if delta > threshold_ms and sig:
                 self.log(
-                    f"TIMING LEAK — '{label}' is {delta:.1f}ms {'slower' if data['med'] > baseline else 'faster'} "
-                    f"than baseline — user enumeration or branching logic exposed", "crit"
+                    f"TIMING LEAK — '{label}': {delta:.1f}ms {direction} than baseline "
+                    f"(δ/σ={delta/max(data['std'],1):.1f}x) — user enum or branching exposed", "crit"
+                )
+                self.record_finding(
+                    title=f"Timing Side-Channel: '{label}' vs baseline",
+                    severity="medium",
+                    location=url,
+                    evidence=(
+                        f"'{label}' median={data['med']:.1f}ms σ={data['std']:.1f}ms | "
+                        f"baseline median={baseline['med']:.1f}ms σ={baseline['std']:.1f}ms | "
+                        f"delta={delta:.1f}ms (statistically significant)"
+                    ),
+                    recommendation="Use constant-time comparison (hmac.compare_digest). Avoid early-exit user lookups.",
+                    cwe="CWE-208",
+                    owasp="A07:2021-Identification and Authentication Failures",
                 )
                 leaks += 1
+            elif delta > threshold_ms and not sig:
+                self.log(f"  '{label}' delta={delta:.1f}ms but σ={data['std']:.1f}ms — NOT significant (noise)", "warn")
             else:
-                self.log(f"'{label}' delta={delta:.1f}ms — within threshold", "pass")
+                self.log(f"  '{label}' delta={delta:.1f}ms σ={data['std']:.1f}ms — within threshold", "pass")
 
-        self.log("=" * 32)
-        if leaks > 0:
-            self.log(f"{leaks} timing side-channel(s) detected — constant-time comparison not enforced", "crit")
+        # SQLi time-based: absolute threshold, not relative
+        for label in ("SQLi SLEEP(3) probe", "SQLi WAITFOR probe"):
+            if label in results and results[label]["med"] >= 2800:
+                self.log(
+                    f"TIME-BASED SQLi CONFIRMED — '{label}' median={results[label]['med']:.0f}ms (~3s sleep)", "crit"
+                )
+                self.record_finding(
+                    title=f"Time-Based SQL Injection via login ({label})",
+                    severity="critical",
+                    location=url,
+                    evidence=f"Median response with SLEEP payload: {results[label]['med']:.0f}ms",
+                    recommendation="Use parameterized queries. Never interpolate user input into SQL.",
+                    cwe="CWE-89",
+                    owasp="A03:2021-Injection",
+                )
+                leaks += 1
+
+        # Probe reset + 2FA endpoints
+        for name, path_sub in [("password_reset", "/api/auth/reset"), ("otp_2fa", "/api/auth/verify")]:
+            ep = url.replace("/api/login", path_sub).replace("/login", path_sub)
+            if ep == url: continue
+            self.log(f"Probing {name} timing ({rounds // 2} rounds)...")
+            t1 = self._measure(ep, {"email": "real@example.com", "token": "000000"}, max(4, rounds // 2))
+            t2 = self._measure(ep, {"email": "ghost@fake.invalid", "token": "000000"}, max(4, rounds // 2))
+            m1, _, s1, _ = self._stats(t1)
+            m2, _, s2, _ = self._stats(t2)
+            ep_delta = abs(m1 - m2)
+            if ep_delta > threshold_ms and self._is_significant(ep_delta, s1, s2):
+                self.log(f"  TIMING LEAK on {name}: delta={ep_delta:.1f}ms — user enumeration possible", "warn")
+                leaks += 1
+            else:
+                self.log(f"  {name}: delta={ep_delta:.1f}ms — OK", "pass")
+
+        self.log("=" * 50)
+        if leaks:
+            self.log(f"{leaks} statistically significant timing side-channel(s) detected", "crit")
         else:
             self.log("No significant timing differences — responses appear constant-time", "pass")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TimeBomb - Timing Attack Detector")
-    parser.add_argument("--url", required=True, help="Login/auth endpoint (e.g. http://localhost:3456/api/login)")
-    parser.add_argument("--rounds", type=int, default=8, help="Measurement rounds per probe (default: 8)")
-    parser.add_argument("--threshold", type=float, default=150.0, help="Timing leak threshold in ms (default: 150)")
-    parser.add_argument('-v', '--version', action='version', version='TimeBomb 1.0.0')
+    parser = argparse.ArgumentParser(description="TimeBomb v2.0 — Timing Attack Detector")
+    parser.add_argument("--url", required=True, help="Login endpoint (e.g. http://localhost:3456/api/login)")
+    parser.add_argument("--rounds",    type=int,   default=20,    help="Rounds per probe (default: 20)")
+    parser.add_argument("--threshold", type=float, default=100.0, help="Timing threshold ms (default: 100)")
+    parser.add_argument("-v", "--version", action="version", version="TimeBomb 2.0.0")
     args = parser.parse_args()
-
     TimeBomb().run(args.url, args.rounds, args.threshold)
