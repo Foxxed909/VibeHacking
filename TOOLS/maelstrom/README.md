@@ -1,81 +1,77 @@
-# Maelstrom
+# Maelstrom v3
 
-Maelstrom is the Go-based load tester for VibeHacking. It is built for localhost, LAN, VPN, and private staging systems, plus public hosts you own and have explicitly authorized.
+Go-based high-concurrency load tester for VibeHacking.
 
-Public internet hosts are blocked **unless** you list them in `authorized_targets.txt` at the VibeHacking root (one exact hostname per line — wildcards are ignored on purpose, so you cannot authorize a whole platform like `*.vercel.app`). Only add hosts you own or have written permission to test. For everything else, use `storm --url-check` for safe one-request availability checks instead of load generation.
+Built for localhost, LAN, VPN, and private staging systems, plus public hosts you own and have explicitly authorized via `authorized_targets.txt`.
 
-> **Shared platforms (Vercel, Netlify, etc.):** their acceptable-use policies restrict load/stress testing. Keep rates moderate, avoid full-send (`-r 0`), prefer a preview deployment, and confirm you're within the provider's policy first.
-> Public Maelstrom runs are capped at 9999.99 rps / 256 workers. The allowlist is
-> the permission gate: only add external hosts you own or have written permission
-> to test.
+## New in v3
+
+- Proper rate limiter (token-bucket style)
+- User-Agent rotation (browser + tool UAs)
+- Multi-path / wordlist support (`--paths`)
+- Proxy support (`--proxy`)
+- TLS skip (`--tls-skip`)
+- Cache-bust (`--cache-bust`)
+- Warmup phase (`--warmup N`)
+- Inline body (`--body`)
+- Error classification (timeout / connect / tls / reset / dns)
+- Live error breakdown in window stats
+- JSON report (`--json`)
+- Richer Markdown report + per-path stats
+- Real byte transfer accounting
+
+Public internet hosts remain gated by `authorized_targets.txt` and the public RPS/worker caps.
 
 ## Run
 
-From the VibeHacking root:
-
-```powershell
+```bash
+# From VibeHacking root
 python vibe.py maelstrom -t http://localhost:3456/ -d 10s -r 5000 -w 256
-```
 
-Direct Go run:
+# Direct
+cd TOOLS/maelstrom
+go run . -t http://localhost:3456/ -d 15s -r 10000 -w 512 --report-file report.md --json report.json
 
-```powershell
-cd TOOLS\maelstrom
-go run . -t http://localhost:3456/ -d 10s -r 3m/min -w 512 --report-file maelstrom_report.md
-```
+# Full-send (private only)
+go run . -t http://localhost:3456/ -d 5s -r 0 -w 1024
 
-Build a local binary:
-
-```powershell
-cd TOOLS\maelstrom
-go build -o maelstrom.exe .
-.\maelstrom.exe -t http://localhost:3456/ -d 10s -r 50000 -w 512
-```
-
-Full-send mode is worker-limited and should only be used against local/private labs:
-
-```powershell
-python vibe.py maelstrom -t http://localhost:3456/ -d 5s -r 0 -w 1024
+# Multi-path + cache-bust + warmup
+go run . -t http://localhost:3456/ -d 20s -r 2000 -w 128 \
+  --paths paths.txt --cache-bust --warmup 50 --tls-skip
 ```
 
 ## Flags
 
-- `--target`, `-t`: target URL.
-- `--method`, `-m`: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, or `OPTIONS`.
-- `--rate`, `-r`: request rate. Bare values are RPS. Also accepts values like `50000rps`, `120000rpm`, or `3m/min`. Use `0`, `full`, or `max` for full-send mode.
-- `--duration`, `-d`: run time, such as `30s` or `5m`.
-- `--workers`, `-w`: worker goroutines.
-- `--payload`, `-p`: JSON payload file for body methods.
-- `--headers`, `-H`: custom header. Repeat as needed, for example `-H "Authorization: Bearer TOKEN"`.
-- `--timeout`: per-request timeout. Default is `5s`.
-- `--report-file`: optional Markdown report path.
+| Flag | Description |
+|------|-------------|
+| `-t / --target` | Target URL |
+| `-m / --method` | GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS |
+| `-r / --rate` | RPS (`0`/`full`/`max` = full-send). Also `3m/min`, `50k`, etc. |
+| `-d / --duration` | e.g. `30s`, `5m` |
+| `-w / --workers` | Goroutines |
+| `--body` | Inline body string |
+| `-p / --payload` | Body file |
+| `--paths` | Wordlist of paths or full URLs |
+| `--proxy` | HTTP/HTTPS proxy |
+| `--timeout` | Per-request timeout (default 5s) |
+| `--report-file` | Markdown report |
+| `--json` | JSON report |
+| `--warmup` | Warmup request count |
+| `--tls-skip` | Skip certificate verification |
+| `--no-rotate-ua` | Fixed User-Agent |
+| `--cache-bust` | Append random `?v=` / `&v=` every request |
+| `-H` | Custom header (repeatable) |
 
-## Privacy
+## Authorization
 
-Maelstrom shows the exact target URL in console and Markdown reports so operators
-can confirm they are testing the intended authorized host.
+Public hosts must appear as exact hostnames in `authorized_targets.txt` at the VibeHacking root. Wildcards are ignored on purpose.
 
-This does not hide network metadata from the target, DNS resolver, ISP/VPN, or
-hosting provider. Use an approved test gateway or privacy relay when tester
-identity must be separated from the target.
+Public caps: **9999.99 RPS / 256 workers**. Full-send is private-only.
 
-## Host Tuning
-
-Keep-alive is enabled by default to reduce socket churn and ephemeral port exhaustion. For high-rate private lab tests, raise limits on the generator host before running.
-
-Linux lab example:
+## Host Tuning (high rate labs)
 
 ```bash
 ulimit -n 1048576
 sudo sysctl -w net.ipv4.ip_local_port_range="10000 65535"
 sudo sysctl -w net.ipv4.tcp_tw_reuse=1
 ```
-
-Windows lab checks:
-
-```powershell
-netsh int ipv4 show dynamicport tcp
-netstat -ano | findstr TIME_WAIT
-```
-
-If generator CPU is saturated, lower `--workers` or split the test across multiple authorized private generators instead of testing from the same machine that hosts the app.

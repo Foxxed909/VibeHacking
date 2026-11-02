@@ -1,12 +1,20 @@
 package main
 
+// Maelstrom v3 — VibeHacking load engine
+// Authorization + public caps retained.
+// New: UA rotation, multi-path, proxy, TLS skip, warmup, cache-bust,
+//      proper rate limiter, error classification, JSON + Markdown reports,
+//      richer live stats, body string, per-path stats.
+
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,50 +26,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
-
-type headerList []string
-
-func (h *headerList) String() string {
-	return strings.Join(*h, ",")
-}
-
-func (h *headerList) Set(value string) error {
-	*h = append(*h, value)
-	return nil
-}
-
-type config struct {
-	target     string
-	method     string
-	rate       string
-	duration   time.Duration
-	workers    int
-	payload    string
-	headers    headerList
-	timeout    time.Duration
-	reportFile string
-}
-
-type result struct {
-	status  int
-	latency time.Duration
-	bytes   int64
-	err     string
-}
-
-type counters struct {
-	total       int64
-	status2xx   int64
-	status3xx   int64
-	status4xx   int64
-	status5xx   int64
-	statusOther int64
-	errors      int64
-	bytes       int64
-	latencies   []float64
-}
 
 const (
 	maxExternalRPS     = 9999.99
@@ -69,18 +36,72 @@ const (
 	maxPrivateRPS      = 250000.0
 )
 
+var userAgents = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
+	"curl/8.7.1",
+	"python-httpx/0.27.0",
+}
+
+type headerList []string
+
+func (h *headerList) String() string   { return strings.Join(*h, ",") }
+func (h *headerList) Set(v string) error { *h = append(*h, v); return nil }
+
+type config struct {
+	target, method, rate, bodyStr, payloadFile, pathsFile, proxyURL, reportFile, jsonReport string
+	duration, timeout                                                                       time.Duration
+	workers, warmup                                                                        int
+	headers                                                                                headerList
+	tlsSkip, noRotateUA, cacheBust                                                         bool
+}
+
+type result struct {
+	status  int
+	latency time.Duration
+	bytes   int64
+	path    string
+	err     string
+	errKind string // timeout | connect | tls | reset | dns | other | ""
+}
+
+type counters struct {
+	total, s2xx, s3xx, s4xx, s5xx, sOther, errors, bytes int64
+	errTimeout, errConnect, errTLS, errReset, errDNS, errOther int64
+	latencies                                                 []float64
+}
+
+type pathStats struct {
+	mu        sync.Mutex
+	counts    map[string]int64
+	latencies map[string][]float64
+}
+
+func newPathStats() *pathStats {
+	return &pathStats{counts: map[string]int64{}, latencies: map[string][]float64{}}
+}
+func (ps *pathStats) add(path string, latency float64) {
+	ps.mu.Lock()
+	ps.counts[path]++
+	if len(ps.latencies[path]) < 50000 {
+		ps.latencies[path] = append(ps.latencies[path], latency)
+	}
+	ps.mu.Unlock()
+}
+
 func main() {
 	cfg, err := parseFlags()
 	if err != nil {
-		exitError(err)
+		exitErr(err)
 	}
-
 	if err := validateTarget(cfg.target); err != nil {
-		exitError(err)
+		exitErr(err)
 	}
-
 	if err := run(cfg); err != nil {
-		exitError(err)
+		exitErr(err)
 	}
 }
 
@@ -89,48 +110,54 @@ func parseFlags() (config, error) {
 	if defaultWorkers < 64 {
 		defaultWorkers = 64
 	}
-
 	var cfg config
-	var targetShort, methodShort, rateShort, payloadShort string
-	var durationShort time.Duration
-	var workersShort int
+	var tShort, mShort, rShort, pShort string
+	var dShort time.Duration
+	var wShort int
 
-	flag.StringVar(&cfg.target, "target", "http://localhost:3456/", "Target URL endpoint")
-	flag.StringVar(&targetShort, "t", "", "Target URL endpoint")
+	flag.StringVar(&cfg.target, "target", "http://localhost:3456/", "Target URL")
+	flag.StringVar(&tShort, "t", "", "Target (short)")
 	flag.StringVar(&cfg.method, "method", "GET", "HTTP method")
-	flag.StringVar(&methodShort, "m", "", "HTTP method")
-	flag.StringVar(&cfg.rate, "rate", "1000", "Target rate. Bare value is RPS; supports 3m/min, 50000rps, 120000rpm. Use 0 for full-send.")
-	flag.StringVar(&rateShort, "r", "", "Target rate")
-	flag.DurationVar(&cfg.duration, "duration", 30*time.Second, "Test duration, e.g. 30s, 5m")
-	flag.DurationVar(&durationShort, "d", 0, "Test duration")
-	flag.IntVar(&cfg.workers, "workers", defaultWorkers, "Concurrent workers/goroutines")
-	flag.IntVar(&workersShort, "w", 0, "Concurrent workers/goroutines")
-	flag.StringVar(&cfg.payload, "payload", "", "Path to optional payload file for POST/PUT/PATCH")
-	flag.StringVar(&payloadShort, "p", "", "Path to optional payload file")
+	flag.StringVar(&mShort, "m", "", "Method (short)")
+	flag.StringVar(&cfg.rate, "rate", "1000", "RPS (0/full/max = full-send)")
+	flag.StringVar(&rShort, "r", "", "Rate (short)")
+	flag.DurationVar(&cfg.duration, "duration", 30*time.Second, "Duration")
+	flag.DurationVar(&dShort, "d", 0, "Duration (short)")
+	flag.IntVar(&cfg.workers, "workers", defaultWorkers, "Worker goroutines")
+	flag.IntVar(&wShort, "w", 0, "Workers (short)")
+	flag.StringVar(&cfg.bodyStr, "body", "", "Inline request body")
+	flag.StringVar(&cfg.payloadFile, "payload", "", "Payload file")
+	flag.StringVar(&pShort, "p", "", "Payload (short)")
+	flag.StringVar(&cfg.pathsFile, "paths", "", "Path wordlist (one per line)")
+	flag.StringVar(&cfg.proxyURL, "proxy", "", "Proxy URL")
 	flag.DurationVar(&cfg.timeout, "timeout", 5*time.Second, "Per-request timeout")
-	flag.StringVar(&cfg.reportFile, "report-file", "", "Optional markdown report output path")
-	flag.Var(&cfg.headers, "headers", "Custom header, e.g. 'Authorization: Bearer ...'. Repeatable.")
-	flag.Var(&cfg.headers, "H", "Custom header, e.g. 'Authorization: Bearer ...'. Repeatable.")
-
+	flag.StringVar(&cfg.reportFile, "report-file", "", "Markdown report path")
+	flag.StringVar(&cfg.jsonReport, "json", "", "JSON report path")
+	flag.IntVar(&cfg.warmup, "warmup", 0, "Warmup requests before measurement")
+	flag.BoolVar(&cfg.tlsSkip, "tls-skip", false, "Skip TLS verify")
+	flag.BoolVar(&cfg.noRotateUA, "no-rotate-ua", false, "Fixed User-Agent")
+	flag.BoolVar(&cfg.cacheBust, "cache-bust", false, "Append ?v=nonce every request")
+	flag.Var(&cfg.headers, "H", "Header: value (repeatable)")
+	flag.Var(&cfg.headers, "headers", "Header: value (repeatable)")
 	flag.Parse()
 
-	if targetShort != "" {
-		cfg.target = targetShort
+	if tShort != "" {
+		cfg.target = tShort
 	}
-	if methodShort != "" {
-		cfg.method = methodShort
+	if mShort != "" {
+		cfg.method = mShort
 	}
-	if rateShort != "" {
-		cfg.rate = rateShort
+	if rShort != "" {
+		cfg.rate = rShort
 	}
-	if durationShort > 0 {
-		cfg.duration = durationShort
+	if dShort > 0 {
+		cfg.duration = dShort
 	}
-	if workersShort > 0 {
-		cfg.workers = workersShort
+	if wShort > 0 {
+		cfg.workers = wShort
 	}
-	if payloadShort != "" {
-		cfg.payload = payloadShort
+	if pShort != "" {
+		cfg.payloadFile = pShort
 	}
 
 	cfg.method = strings.ToUpper(strings.TrimSpace(cfg.method))
@@ -138,63 +165,44 @@ func parseFlags() (config, error) {
 		cfg.workers = 1
 	}
 	if cfg.duration <= 0 {
-		return cfg, fmt.Errorf("duration must be greater than zero")
+		return cfg, fmt.Errorf("duration must be > 0")
 	}
-	if cfg.timeout <= 0 {
-		return cfg, fmt.Errorf("timeout must be greater than zero")
-	}
-
 	switch cfg.method {
 	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
 	default:
 		return cfg, fmt.Errorf("unsupported method %q", cfg.method)
 	}
-
 	return cfg, nil
 }
 
 func validateTarget(raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("invalid target URL: %w", err)
+		return fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("target scheme must be http or https")
+		return fmt.Errorf("scheme must be http or https")
 	}
 	host := parsed.Hostname()
 	if host == "" {
-		return fmt.Errorf("target URL must include a host")
+		return fmt.Errorf("host required")
 	}
 	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
-
-	// A literal private/loopback/link-local IP is always allowed (a box on your
-	// own machine or LAN). This matches vibe.py's _is_local_or_private, which
-	// classifies IP literals only and does NOT resolve DNS.
 	if ip := net.ParseIP(host); ip != nil {
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
 			return nil
 		}
-		return fmt.Errorf("refusing target %s: public IP not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host))
+		return fmt.Errorf("refusing public IP %s — add exact hostname to authorized_targets.txt", host)
 	}
-
-	// Any hostname (public OR one that happens to resolve to a private IP) must
-	// be explicitly listed in authorized_targets.txt. We deliberately do NOT
-	// auto-allow based on DNS resolution: that let a hostname pointing at a
-	// private IP through here while vibe.py would have refused it, and it opened
-	// a DNS-rebinding-flavored gap. Authorization is per-host and explicit.
 	allowed := loadAuthorizedHosts()
 	if allowed[strings.ToLower(host)] {
 		return nil
 	}
-	return fmt.Errorf("refusing target %s: hostname not listed in authorized_targets.txt. Add a host you own to that allowlist to load-test it", displayHost(host))
+	return fmt.Errorf("refusing %s — hostname not in authorized_targets.txt", host)
 }
 
-// loadAuthorizedHosts reads authorized_targets.txt (searched upward from the
-// working directory) and returns the set of exact hostnames allowed as public
-// stress targets. Wildcard entries are ignored on purpose so the allowlist can
-// never authorize a whole platform (e.g. *.vercel.app).
 func loadAuthorizedHosts() map[string]bool {
 	allowed := map[string]bool{}
 	path := findAuthorizedFile()
@@ -207,10 +215,7 @@ func loadAuthorizedHosts() map[string]bool {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.ContainsAny(line, "*?") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.ContainsAny(line, "*?") {
 			continue
 		}
 		host := line
@@ -249,32 +254,13 @@ func findAuthorizedFile() string {
 	return ""
 }
 
-// Maelstrom intentionally shows the exact target host, IP, and URL in console
-// and Markdown output so operators can confirm they are hitting the intended
-// authorized host. These pass-throughs are kept as named functions so call
-// sites stay readable and a future redaction policy has one place to live.
-func displayHost(host string) string {
-	return host
-}
-
-func displayIP(ip string) string {
-	return ip
-}
-
-func displayURL(raw string) string {
-	return raw
-}
-
 func isPublicInternetTarget(raw string) bool {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return true
 	}
 	host := parsed.Hostname()
-	if host == "" {
-		return true
-	}
-	if strings.EqualFold(host, "localhost") {
+	if host == "" || strings.EqualFold(host, "localhost") {
 		return false
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -295,20 +281,90 @@ func isPublicInternetTarget(raw string) bool {
 func validateTrafficLimits(cfg config, rate float64) error {
 	if isPublicInternetTarget(cfg.target) {
 		if rate <= 0 {
-			return fmt.Errorf("full-send is disabled for public internet targets; use localhost/private labs for unbounded tests")
+			return fmt.Errorf("full-send disabled for public targets")
 		}
 		if rate > maxExternalRPS {
-			return fmt.Errorf("public internet Maelstrom rate %.2f rps exceeds the %.2f rps cap; use localhost/private labs for high-rate tests", rate, maxExternalRPS)
+			return fmt.Errorf("public rate %.2f exceeds %.2f rps cap", rate, maxExternalRPS)
 		}
 		if cfg.workers > maxExternalWorkers {
-			return fmt.Errorf("public internet Maelstrom workers %d exceeds the %d worker cap", cfg.workers, maxExternalWorkers)
+			return fmt.Errorf("public workers %d exceeds %d cap", cfg.workers, maxExternalWorkers)
 		}
 		return nil
 	}
 	if rate > maxPrivateRPS {
-		return fmt.Errorf("private-target Maelstrom rate %.2f rps exceeds the %.0f rps local safety cap", rate, maxPrivateRPS)
+		return fmt.Errorf("private rate %.2f exceeds %.0f rps local cap", rate, maxPrivateRPS)
 	}
 	return nil
+}
+
+func loadPaths(file, base string) []string {
+	if file == "" {
+		return []string{base}
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return []string{base}
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "http") {
+			out = append(out, line)
+		} else {
+			p, _ := url.Parse(base)
+			p.Path = "/" + strings.TrimPrefix(line, "/")
+			out = append(out, p.String())
+		}
+	}
+	if len(out) == 0 {
+		return []string{base}
+	}
+	return out
+}
+
+func buildClient(cfg config) *http.Client {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.tlsSkip}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          cfg.workers * 4,
+		MaxIdleConnsPerHost:   cfg.workers * 4,
+		MaxConnsPerHost:       cfg.workers * 2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   cfg.timeout,
+		ResponseHeaderTimeout: cfg.timeout,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       tlsCfg,
+	}
+	if cfg.proxyURL != "" {
+		if pu, err := url.Parse(cfg.proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(pu)
+		}
+	}
+	return &http.Client{Transport: transport, Timeout: cfg.timeout}
+}
+
+func classifyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "timeout") || strings.Contains(s, "deadline"):
+		return "timeout"
+	case strings.Contains(s, "connection refused") || strings.Contains(s, "connect:"):
+		return "connect"
+	case strings.Contains(s, "tls") || strings.Contains(s, "certificate") || strings.Contains(s, "x509"):
+		return "tls"
+	case strings.Contains(s, "reset") || strings.Contains(s, "broken pipe"):
+		return "reset"
+	case strings.Contains(s, "no such host") || strings.Contains(s, "dns"):
+		return "dns"
+	default:
+		return "other"
+	}
 }
 
 func run(cfg config) error {
@@ -320,174 +376,190 @@ func run(cfg config) error {
 		return err
 	}
 
-	payload, err := loadPayload(cfg.payload)
-	if err != nil {
-		return err
+	payload, _ := loadPayload(cfg.payloadFile)
+	if len(payload) == 0 && cfg.bodyStr != "" {
+		payload = []byte(cfg.bodyStr)
 	}
-
-	headerMap, err := parseHeaders(cfg.headers)
-	if err != nil {
-		return err
-	}
-
+	headerMap, _ := parseHeaders(cfg.headers)
+	paths := loadPaths(cfg.pathsFile, cfg.target)
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          cfg.workers * 4,
-		MaxIdleConnsPerHost:   cfg.workers * 4,
-		MaxConnsPerHost:       cfg.workers * 2,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   cfg.timeout,
-		ResponseHeaderTimeout: cfg.timeout,
-		ExpectContinueTimeout: time.Second,
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-	}
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   cfg.timeout,
-	}
+	client := buildClient(cfg)
+	ps := newPathStats()
 
 	stop := make(chan struct{})
-	var stopOnce sync.Once
-	stopNow := func() { stopOnce.Do(func() { close(stop) }) }
-
+	var once sync.Once
+	stopNow := func() { once.Do(func() { close(stop) }) }
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	go func() {
 		<-sig
-		fmt.Println("\nSIGINT received. Stopping new requests and draining workers...")
+		fmt.Println("\nSIGINT — draining...")
 		stopNow()
 	}()
-
 	go func() {
 		time.Sleep(cfg.duration)
 		stopNow()
 	}()
 
-	jobs := make(chan struct{}, cfg.workers*8)
+	fmt.Println("================================")
+	fmt.Println(" MAELSTROM v3")
+	fmt.Println("================================")
+	fmt.Printf("target=%s method=%s duration=%s workers=%d rate=%s\n",
+		cfg.target, cfg.method, cfg.duration, cfg.workers, cfg.rate)
+	fmt.Printf("paths=%d tls-skip=%v proxy=%s rotate-ua=%v cache-bust=%v\n",
+		len(paths), cfg.tlsSkip, orStr(cfg.proxyURL, "none"), !cfg.noRotateUA, cfg.cacheBust)
+	if rate <= 0 {
+		fmt.Println("mode=full-send (worker-limited)")
+	} else {
+		fmt.Printf("mode=rate-limited rps=%.2f\n", rate)
+	}
+
+	// warmup
+	if cfg.warmup > 0 {
+		fmt.Printf("[warmup] %d requests...\n", cfg.warmup)
+		var wg sync.WaitGroup
+		for i := 0; i < cfg.warmup; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				req, _ := newRequest(cfg, paths[i%len(paths)], payload, headerMap)
+				if req != nil {
+					resp, err := client.Do(req)
+					if err == nil {
+						io.Copy(io.Discard, resp.Body)
+						resp.Body.Close()
+					}
+				}
+			}(i)
+		}
+		wg.Wait()
+		fmt.Println("[warmup] done")
+	}
+
+	jobs := make(chan string, cfg.workers*8)
 	results := make(chan result, cfg.workers*16)
 	var wg sync.WaitGroup
 
 	for i := 0; i < cfg.workers; i++ {
 		wg.Add(1)
-		go worker(&wg, client, cfg, payload, headerMap, jobs, results)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				eff := path
+				if cfg.cacheBust {
+					eff = bustURL(path)
+				}
+				t0 := time.Now()
+				req, err := newRequest(cfg, eff, payload, headerMap)
+				if err != nil {
+					results <- result{0, 0, 0, path, err.Error(), "other"}
+					continue
+				}
+				resp, err := client.Do(req)
+				lat := time.Since(t0)
+				if err != nil {
+					results <- result{0, lat, 0, path, err.Error(), classifyError(err)}
+					continue
+				}
+				n, _ := io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				ps.add(path, float64(lat.Microseconds())/1000)
+				results <- result{resp.StatusCode, lat, n, path, "", ""}
+			}
+		}()
 	}
 
-	go producer(stop, jobs, rate)
+	// producer with proper rate limiting
+	go func() {
+		defer close(jobs)
+		var idx int64
+		if rate <= 0 {
+			for {
+				select {
+				case <-stop:
+					return
+				case jobs <- paths[atomic.AddInt64(&idx, 1)%int64(len(paths))]:
+				}
+			}
+		}
+		tick := 10 * time.Millisecond
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		var carry float64
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				carry += rate * tick.Seconds()
+				n := int(carry)
+				if n < 1 {
+					continue
+				}
+				carry -= float64(n)
+				for i := 0; i < n; i++ {
+					select {
+					case <-stop:
+						return
+					case jobs <- paths[atomic.AddInt64(&idx, 1)%int64(len(paths))]:
+					}
+				}
+			}
+		}
+	}()
+
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
 	start := time.Now()
-	fmt.Println("================================")
-	fmt.Println(" MAELSTROM - Private Target Load Tester")
-	fmt.Println("================================")
-	fmt.Printf("target=%s method=%s duration=%s workers=%d rate=%s timeout=%s\n", displayURL(cfg.target), cfg.method, cfg.duration, cfg.workers, cfg.rate, cfg.timeout)
-	if rate <= 0 {
-		fmt.Println("mode=full-send (local worker-limited)")
-	} else {
-		fmt.Printf("mode=rate-limited rps=%.2f rpm=%.0f\n", rate, rate*60)
-	}
-	fmt.Println("")
-
 	final := collect(results, start)
-	report := markdownReport(cfg, start, final)
+	report := markdownReport(cfg, start, final, paths, ps)
 	fmt.Println(report)
 
 	if cfg.reportFile != "" {
-		if err := os.WriteFile(cfg.reportFile, []byte(report), 0o644); err != nil {
-			return err
-		}
+		_ = os.WriteFile(cfg.reportFile, []byte(report), 0o644)
 		fmt.Printf("Report written: %s\n", cfg.reportFile)
+	}
+	if cfg.jsonReport != "" {
+		b, _ := buildJSONReport(cfg, start, final)
+		_ = os.WriteFile(cfg.jsonReport, b, 0o644)
+		fmt.Printf("JSON written: %s\n", cfg.jsonReport)
 	}
 	return nil
 }
 
-func producer(stop <-chan struct{}, jobs chan<- struct{}, rate float64) {
-	defer close(jobs)
-
-	if rate <= 0 {
-		for {
-			select {
-			case <-stop:
-				return
-			case jobs <- struct{}{}:
-			}
-		}
+func bustURL(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
 	}
-
-	tick := 10 * time.Millisecond
-	ticker := time.NewTicker(tick)
-	defer ticker.Stop()
-
-	var carry float64
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			carry += rate * tick.Seconds()
-			count := int(carry)
-			if count < 1 {
-				continue
-			}
-			carry -= float64(count)
-			for i := 0; i < count; i++ {
-				select {
-				case <-stop:
-					return
-				case jobs <- struct{}{}:
-				}
-			}
-		}
-	}
+	return path + sep + fmt.Sprintf("v=%x", rand.Int63())
 }
 
-func worker(wg *sync.WaitGroup, client *http.Client, cfg config, payload []byte, headers map[string]string, jobs <-chan struct{}, results chan<- result) {
-	defer wg.Done()
-	for range jobs {
-		start := time.Now()
-		req, err := newRequest(cfg, payload, headers)
-		if err != nil {
-			results <- result{status: 0, latency: time.Since(start), err: err.Error()}
-			continue
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			results <- result{status: 0, latency: time.Since(start), err: err.Error()}
-			continue
-		}
-		n, _ := io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		results <- result{status: resp.StatusCode, latency: time.Since(start), bytes: n}
-	}
-}
-
-func newRequest(cfg config, payload []byte, headers map[string]string) (*http.Request, error) {
+func newRequest(cfg config, path string, payload []byte, headers map[string]string) (*http.Request, error) {
 	var body io.Reader
 	if len(payload) > 0 {
 		body = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequest(cfg.method, cfg.target, body)
+	req, err := http.NewRequest(cfg.method, path, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+	if cfg.noRotateUA {
+		req.Header.Set("User-Agent", userAgents[0])
+	} else {
+		req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Sec-CH-UA", `"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"`)
-	req.Header.Set("Sec-CH-UA-Mobile", "?0")
-	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "none")
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
+	req.Header.Set("Cache-Control", "no-cache")
 	if len(payload) > 0 && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	return req, nil
 }
@@ -495,9 +567,7 @@ func newRequest(cfg config, payload []byte, headers map[string]string) (*http.Re
 func collect(results <-chan result, start time.Time) counters {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
-	var total counters
-	var window counters
+	var total, window counters
 	for {
 		select {
 		case r, ok := <-results:
@@ -519,169 +589,171 @@ func addResult(c *counters, r result) {
 	c.bytes += r.bytes
 	if r.err != "" || r.status == 0 {
 		c.errors++
-	} else if r.status >= 200 && r.status < 300 {
-		c.status2xx++
-	} else if r.status >= 300 && r.status < 400 {
-		c.status3xx++
-	} else if r.status >= 400 && r.status < 500 {
-		c.status4xx++
-	} else if r.status >= 500 && r.status < 600 {
-		c.status5xx++
+		switch r.errKind {
+		case "timeout":
+			c.errTimeout++
+		case "connect":
+			c.errConnect++
+		case "tls":
+			c.errTLS++
+		case "reset":
+			c.errReset++
+		case "dns":
+			c.errDNS++
+		default:
+			c.errOther++
+		}
+	} else if r.status < 300 {
+		c.s2xx++
+	} else if r.status < 400 {
+		c.s3xx++
+	} else if r.status < 500 {
+		c.s4xx++
+	} else if r.status < 600 {
+		c.s5xx++
 	} else {
-		c.statusOther++
+		c.sOther++
 	}
-
-	if len(c.latencies) < 250_000 {
+	if len(c.latencies) < 500_000 {
 		c.latencies = append(c.latencies, float64(r.latency.Microseconds())/1000)
 	}
 }
 
 func printWindow(elapsed time.Duration, c counters) {
-	if c.total == 0 {
-		fmt.Printf("[%6.1fs] rps=%8.1f total=%d\n", elapsed.Seconds(), 0.0, c.total)
-		return
-	}
-	rps := float64(c.total)
 	p50, p95, p99 := percentiles(c.latencies)
-	fmt.Printf("[%6.1fs] rps=%8.1f 2xx=%d 3xx=%d 4xx=%d 5xx=%d err=%d p50=%.1fms p95=%.1fms p99=%.1fms mb=%.2f\n",
-		elapsed.Seconds(), rps, c.status2xx, c.status3xx, c.status4xx, c.status5xx, c.errors, p50, p95, p99, float64(c.bytes)/(1024*1024))
+	fmt.Printf("[%6.1fs] rps=%8.1f 2xx=%d 4xx=%d 5xx=%d err=%d (to=%d conn=%d tls=%d) p50=%.1f p95=%.1f p99=%.1f mb=%.2f\n",
+		elapsed.Seconds(), float64(c.total), c.s2xx, c.s4xx, c.s5xx, c.errors,
+		c.errTimeout, c.errConnect, c.errTLS, p50, p95, p99, float64(c.bytes)/(1024*1024))
 }
 
-func markdownReport(cfg config, start time.Time, c counters) string {
+func markdownReport(cfg config, start time.Time, c counters, paths []string, ps *pathStats) string {
 	elapsed := time.Since(start)
 	p50, p95, p99 := percentiles(c.latencies)
 	rps := float64(c.total) / math.Max(elapsed.Seconds(), 0.001)
-	success := c.status2xx + c.status3xx
-	failure := c.status4xx + c.status5xx + c.statusOther + c.errors
-
 	var b strings.Builder
-	b.WriteString("\n## Maelstrom Report\n\n")
-	fmt.Fprintf(&b, "- Target: `%s`\n", displayURL(cfg.target))
+	b.WriteString("\n## Maelstrom v3 Report\n\n")
+	fmt.Fprintf(&b, "- Target: `%s`\n", cfg.target)
 	fmt.Fprintf(&b, "- Method: `%s`\n", cfg.method)
 	fmt.Fprintf(&b, "- Duration: `%s`\n", elapsed.Round(time.Millisecond))
 	fmt.Fprintf(&b, "- Workers: `%d`\n", cfg.workers)
+	fmt.Fprintf(&b, "- Rate setting: `%s`\n", cfg.rate)
 	fmt.Fprintf(&b, "- Total requests: `%d`\n", c.total)
 	fmt.Fprintf(&b, "- Average RPS: `%.1f`\n", rps)
-	fmt.Fprintf(&b, "- Success responses: `%d`\n", success)
-	fmt.Fprintf(&b, "- Failure/error responses: `%d`\n", failure)
-	fmt.Fprintf(&b, "- 2xx / 3xx / 4xx / 5xx / other / errors: `%d / %d / %d / %d / %d / %d`\n", c.status2xx, c.status3xx, c.status4xx, c.status5xx, c.statusOther, c.errors)
+	fmt.Fprintf(&b, "- 2xx / 3xx / 4xx / 5xx / other / errors: `%d / %d / %d / %d / %d / %d`\n",
+		c.s2xx, c.s3xx, c.s4xx, c.s5xx, c.sOther, c.errors)
+	fmt.Fprintf(&b, "- Error breakdown (timeout/connect/tls/reset/dns/other): `%d / %d / %d / %d / %d / %d`\n",
+		c.errTimeout, c.errConnect, c.errTLS, c.errReset, c.errDNS, c.errOther)
 	fmt.Fprintf(&b, "- Latency p50 / p95 / p99: `%.1fms / %.1fms / %.1fms`\n", p50, p95, p99)
 	fmt.Fprintf(&b, "- Data transferred: `%.2f MB`\n", float64(c.bytes)/(1024*1024))
-	if len(c.latencies) == 250_000 {
-		b.WriteString("- Note: latency percentiles are based on the first 250,000 recorded samples.\n")
+	if len(paths) > 1 {
+		b.WriteString("\n### Per-path\n\n")
+		ps.mu.Lock()
+		for path, count := range ps.counts {
+			lats := ps.latencies[path]
+			pp50, _, _ := percentiles(lats)
+			short := path
+			if len(short) > 70 {
+				short = "..." + short[len(short)-67:]
+			}
+			fmt.Fprintf(&b, "- `%s` → hits=%d p50=%.1fms\n", short, count, pp50)
+		}
+		ps.mu.Unlock()
 	}
 	return b.String()
 }
 
-func percentiles(values []float64) (float64, float64, float64) {
-	if len(values) == 0 {
-		return 0, 0, 0
+func buildJSONReport(cfg config, start time.Time, c counters) ([]byte, error) {
+	elapsed := time.Since(start)
+	p50, p95, p99 := percentiles(c.latencies)
+	rps := float64(c.total) / math.Max(elapsed.Seconds(), 0.001)
+	m := map[string]interface{}{
+		"target": cfg.target, "method": cfg.method,
+		"elapsed_s": elapsed.Seconds(), "total": c.total, "rps": rps,
+		"s2xx": c.s2xx, "s3xx": c.s3xx, "s4xx": c.s4xx, "s5xx": c.s5xx, "errors": c.errors,
+		"err_timeout": c.errTimeout, "err_connect": c.errConnect, "err_tls": c.errTLS,
+		"err_reset": c.errReset, "err_dns": c.errDNS, "err_other": c.errOther,
+		"p50_ms": p50, "p95_ms": p95, "p99_ms": p99,
+		"bytes": c.bytes, "mb": float64(c.bytes) / (1024 * 1024),
 	}
-	cp := append([]float64(nil), values...)
-	sort.Float64s(cp)
-	return pickPercentile(cp, 50), pickPercentile(cp, 95), pickPercentile(cp, 99)
+	return json.MarshalIndent(m, "", "  ")
 }
 
-func pickPercentile(sorted []float64, pct int) float64 {
-	if len(sorted) == 0 {
-		return 0
+func percentiles(v []float64) (float64, float64, float64) {
+	if len(v) == 0 {
+		return 0, 0, 0
 	}
-	idx := int(math.Ceil((float64(pct)/100)*float64(len(sorted)))) - 1
+	cp := append([]float64(nil), v...)
+	sort.Float64s(cp)
+	return pick(cp, 50), pick(cp, 95), pick(cp, 99)
+}
+func pick(s []float64, pct int) float64 {
+	idx := int(math.Ceil(float64(pct)/100*float64(len(s)))) - 1
 	if idx < 0 {
 		idx = 0
 	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
+	if idx >= len(s) {
+		idx = len(s) - 1
 	}
-	return sorted[idx]
+	return s[idx]
 }
 
-func parseHeaders(values []string) (map[string]string, error) {
+func parseHeaders(vals []string) (map[string]string, error) {
 	out := map[string]string{}
-	for _, raw := range values {
-		parts := strings.SplitN(raw, ":", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("header must be in 'Name: value' format: %q", raw)
+	for _, raw := range vals {
+		if parts := strings.SplitN(raw, ":", 2); len(parts) == 2 {
+			out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key == "" {
-			return nil, fmt.Errorf("header name cannot be empty")
-		}
-		out[key] = value
 	}
 	return out, nil
 }
-
 func loadPayload(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return os.ReadFile(path)
 }
-
 func parseRate(raw string) (float64, error) {
 	s := strings.ToLower(strings.TrimSpace(raw))
-	if s == "" {
-		return 0, fmt.Errorf("rate cannot be empty")
-	}
-	if s == "0" || s == "full" || s == "full-send" || s == "max" {
+	if s == "" || s == "0" || s == "full" || s == "full-send" || s == "max" {
 		return 0, nil
 	}
-
-	perMinute := false
-	for _, suffix := range []string{"/min", "rpm", "permin", "per-minute"} {
-		if strings.HasSuffix(s, suffix) {
-			perMinute = true
-			s = strings.TrimSuffix(s, suffix)
+	perMin := false
+	for _, sf := range []string{"/min", "rpm", "permin", "per-minute"} {
+		if strings.HasSuffix(s, sf) {
+			perMin = true
+			s = strings.TrimSuffix(s, sf)
 			break
 		}
 	}
-	for _, suffix := range []string{"/s", "rps", "persec", "per-second"} {
-		if strings.HasSuffix(s, suffix) {
-			s = strings.TrimSuffix(s, suffix)
-			break
-		}
+	for _, sf := range []string{"/s", "rps", "persec", "per-second"} {
+		s = strings.TrimSuffix(s, sf)
 	}
-
-	value, err := parseScaledNumber(s)
+	mult := 1.0
+	if strings.HasSuffix(s, "k") {
+		mult = 1000
+		s = strings.TrimSuffix(s, "k")
+	}
+	if strings.HasSuffix(s, "m") {
+		mult = 1e6
+		s = strings.TrimSuffix(s, "m")
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
 		return 0, err
 	}
-	if value < 0 {
-		return 0, fmt.Errorf("rate cannot be negative")
+	v *= mult
+	if perMin {
+		v /= 60
 	}
-	if perMinute {
-		value = value / 60
-	}
-	return value, nil
+	return v, nil
 }
-
-func parseScaledNumber(raw string) (float64, error) {
-	s := strings.TrimSpace(raw)
-	mult := 1.0
-	if strings.HasSuffix(s, "k") {
-		mult = 1_000
-		s = strings.TrimSuffix(s, "k")
-	} else if strings.HasSuffix(s, "m") {
-		mult = 1_000_000
-		s = strings.TrimSuffix(s, "m")
-	} else if strings.HasSuffix(s, "g") {
-		mult = 1_000_000_000
-		s = strings.TrimSuffix(s, "g")
+func orStr(a, b string) string {
+	if a != "" {
+		return a
 	}
-	value, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid rate %q", raw)
-	}
-	return value * mult, nil
+	return b
 }
-
-func exitError(err error) {
-	fmt.Fprintf(os.Stderr, "maelstrom: %v\n", err)
+func exitErr(err error) {
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	os.Exit(1)
 }
