@@ -1,71 +1,81 @@
-# Hyperion v2.1 — 14x Sharded Resilience, Cloud/Edge (Cloudflare, AWS, Vercel) & SLO Load Engine
+# Hyperion — authorized load measurement and SLO checks
 
-**Hyperion v2.1** (`TOOLS/hyperion` + `TOOLS/hyperion.py`) is VibeHacking's next-generation competitor to **Maelstrom**. It is engineered to be **14x stronger than Maelstrom** in both throughput architecture (`3,500,000 RPS` private-lab ceiling vs Maelstrom's `250,000 RPS` cap, zero shared channel/lock contention) and enterprise resilience features, with first-class support for apps running on or backed by **Cloudflare**, **AWS** (CloudFront, ALB, API Gateway, App Runner, Lambda URLs), and **Vercel (`.vercel.app`)**.
+Hyperion provides Python HTTP/1.1 keep-alive and Go HTTP/2-capable engines,
+weighted endpoints, six traffic profiles, latency buckets, Apdex and response
+assertions. Requested-rate ceilings are input validation, not achieved capacity.
+No comparative benchmark establishes a performance multiplier over Maelstrom.
 
-## 🔒 Mandatory Authorization Guard (`XXLMILLEAMEAN`)
+## Measure successful responses
 
-Hyperion is protected by a constant-time (`hmac.compare_digest` / `crypto/subtle.ConstantTimeCompare`) cryptographic guard gate and produces an **HMAC-SHA256 signed run receipt** (`receipt_hmac`):
+| Field | Meaning |
+|---|---|
+| `requested_rate` / `requested_rps` | Configured rate, not a throughput result |
+| `average_rps` | Completed attempts per measured second, including failures |
+| `successful_requests` / `successful_rps` | HTTP 2xx/3xx responses without transport errors, failed assertions or detected challenges |
+| `failed_requests` / `error_rate_pct` | Each failed request counted once, including HTTP 4xx/5xx, transport/body-read errors, assertions and challenges |
+| `histogram_overflow` | Latencies beyond the fixed-width histogram range |
 
-- **CLI flag**: `--guard XXLMILLEAMEAN` (or `-g XXLMILLEAMEAN`)
-- **Environment variable**: `VIBE_HYPERION_GUARD=XXLMILLEAMEAN`
-- **Audit trail**: Every unlock attempt (`allowed=true` or `allowed=false`) is logged to `logs/locked_cli_access.log`.
+A run with no successful samples fails. Assertion failures always fail the run.
+The default failed-request budget is zero. `--slo-err-pct` sets an explicit
+percentage budget; `--slo-min-rps` checks **successful** throughput. An entirely
+blocked run cannot pass even with a permissive budget.
 
-## ☁️ Cloudflare, AWS & Vercel (`.vercel.app`) Edge Support
+Both circuit breakers include failed HTTP 4xx responses and detected challenges.
+The existing `--abort-5xx-pct` name remains for compatibility with the new
+failed-request threshold. Percentiles use 0.1 ms buckets up to six seconds;
+overflow estimates do not have that resolution. Go latency includes reading the
+response body, and its test window excludes the separate recovery probe.
 
-When testing your own applications deployed behind **Cloudflare**, **AWS**, or **`.vercel.app`**, Hyperion v2.1 provides:
+## Small loopback check
 
-1. **Edge Cache Modes (`--edge-mode {auto,cdn-cache,origin-bypass}`)**:
-   - `auto` (default): Sends standard traffic and classifies every response's edge cache status (`HIT`, `MISS`, `DYNAMIC`, `BYPASS`, `PRERENDER`, `STALE`).
-   - `cdn-cache`: Sends cache-friendly requests (`Accept-Encoding: gzip, deflate`) to measure how much load your Cloudflare / CloudFront / Vercel Edge cache absorbs.
-   - `origin-bypass`: Automatically injects `Cache-Control: no-cache, no-store, must-revalidate`, `Pragma: no-cache`, and per-request `_cb=<seq>` query tokens so requests penetrate the CDN edge and stress your **actual backend origin / Vercel Serverless Function / AWS Lambda / ALB**.
-2. **Provider Deployment Protection & Zero-Trust Bypasses**:
-   - **Vercel (`.vercel.app`)**: `--vercel-bypass <secret>` (or `VERCEL_AUTOMATION_BYPASS_SECRET`) sends `x-vercel-protection-bypass` and `x-vercel-set-bypass-cookie: samesitenone`.
-   - **Cloudflare Access**: `--cf-access-id <id> --cf-access-secret <secret>` (or `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`).
-   - **AWS API Gateway**: `--aws-api-key <key>` (or `AWS_API_GATEWAY_KEY`).
-3. **TLS 1.3 ALPN, Custom SNI & Origin Resolution (`--sni`, `--resolve`, `--follow-redirects`)**:
-   - Explicitly negotiates `http/1.1` ALPN on raw TLS sockets for Cloudflare/Vercel/CloudFront TLS 1.3 edges.
-   - Follows canonical `301/302/307/308` edge redirects during preflight (`--follow-redirects`).
-   - Supports `--sni <hostname>` and `--resolve <ip_or_host[:port]>` to test either through the public CDN edge or directly against an origin IP/ALB while preserving the `Host` header and TLS SNI.
-4. **Real-Time Edge Telemetry**:
-   - Auto-detects `cloudflare`, `vercel`, `aws-cloudfront`, and `aws-alb-apigw`.
-   - Extracts active edge PoP/region codes (`CF-Ray` e.g. `CF:LOS`, `x-vercel-id` e.g. `Vercel:iad1`, `x-amz-cf-pop` e.g. `CloudFront:IAD89-P2`).
-   - Tracks `Cache HIT %`, `WAF Challenges` (`cf-mitigated`, `x-vercel-mitigated`, `x-amzn-waf-action`), Cloudflare `520–526` origin saturation errors, and Vercel/Lambda serverless timeouts/throttles.
+Start your local app, then run:
 
-## 🚀 Usage Examples
-
-### 1. Test Your `.vercel.app` App (Edge Cache vs Serverless Function Origin)
 ```bash
-# Authorize and test your .vercel.app deployment (penetrating edge cache to test Serverless capacity)
-python vibe.py hyperion --guard XXLMILLEAMEAN \
-  -t https://my-app.vercel.app/ \
-  --trust-target --yes \
-  --edge-mode origin-bypass \
-  --vercel-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
-  --profile stress-knee \
-  -r 500 -d 15s -w 32 \
-  --slo-p95 300 --slo-apdex 0.90 \
-  --report-file logs/vercel_report.md
+python TOOLS/hyperion.py --guard XXLMILLEAMEAN --engine python \
+  -t http://127.0.0.1:3456/ -r 5 -d 2s -w 1 \
+  --expect-status 200 --json-out logs/hyperion-check.json
 ```
 
-### 2. Test Your Cloudflare-Backed App
+The same measurement rules apply to `--engine go` when a Go toolchain is
+available. Profiles: `constant`, `ramp`, `step`, `spike`, `sawtooth`, and
+`stress-knee`. A missing observed knee does not prove linear scaling or a
+maximum sustainable rate.
+
+## Scope and credentials
+
+Public hosts require an exact entry in `authorized_targets.txt`, explicit
+confirmation, and the existing public rate/worker caps. Private requested-rate
+ceilings remain validation constants. This change does not raise those caps or
+remove the guard or circuit breaker.
+
+The published guard is confirmation friction. The legacy `receipt_hmac` uses
+that published constant; it is not independent report authentication.
+
+The Python surface reader tolerates absent or malformed session data. A saved
+BotBreaker profile is reused only for the same scheme, hostname and effective
+port, so its cookies are not automatically replayed to another origin.
+
+## Cloud/edge observations
+
+Provider headers can identify cache classifications, PoP markers and challenges.
+These observations do not prove that a backend was reached or a protection was
+defeated. `origin-bypass` requests cache revalidation and varies the query;
+provider and origin policy still determine the result. Cloudflare Access,
+Vercel deployment protection and API Gateway options send operator-supplied
+credentials.
+
+## Verification
+
 ```bash
-python vibe.py hyperion --guard XXLMILLEAMEAN \
-  -t https://app.yourdomain.com/ \
-  --trust-target --yes \
-  --edge-mode origin-bypass \
-  --endpoints "/:50,/api/health:50" \
-  --profile ramp \
-  -r 1000 -d 15s -w 64 \
-  --json-out logs/cloudflare_metrics.json
+python -m unittest discover -s tests -p test_hyperion.py -v
+cd TOOLS/hyperion
+go test -race ./...
 ```
 
-### 3. Test Your AWS CloudFront / ALB / API Gateway App
-```bash
-python vibe.py hyperion --guard XXLMILLEAMEAN \
-  -t https://d111111abcdef8.cloudfront.net/api/status \
-  --trust-target --yes \
-  --aws-api-key "$AWS_API_GATEWAY_KEY" \
-  --edge-mode origin-bypass \
-  --profile step \
-  -r 1000 -d 15s -w 64
-```
+Tests use controlled loopback fixtures and synthetic samples: healthy, forbidden,
+rate-limited, challenge and truncated-body responses; assertions; empty runs;
+successful-throughput SLOs; report-write failures; and credential-origin matching.
+They do not establish a throughput multiplier. Compare engines on identical
+hardware, endpoint behavior, protocols and settings; publish measured successful
+throughput, latency and errors.
+

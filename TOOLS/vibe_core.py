@@ -324,6 +324,12 @@ class VibeTool:
                 return {}
         return {}
 
+    def get_surface(self):
+        """Read the optional shared surface without assuming a session schema."""
+        session = self.load_session()
+        surface = session.get("surface") if isinstance(session, dict) else None
+        return surface if isinstance(surface, dict) else {}
+
     def baseline_probe(self, base_url, timeout=5):
         """Token-probe baseline: fires a random path, returns dict(catch_all, length, body, url, status)."""
         token = "vibe-baseline-%s" % datetime.datetime.now().strftime("%H%M%S%f")
@@ -433,3 +439,4 @@ def looks_like_html_shell(content: str) -> bool:
         return False
     low = content[:500].lower()
     return "<!doctype html" in low or ("<html" in low and "<head" in low)
+
