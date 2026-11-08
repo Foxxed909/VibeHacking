@@ -97,7 +97,7 @@ Capacity and rate-limit testing. Public hosts require an exact entry in
 | `storm` | Authorized-target traffic stressor (Python), with a safe `--url-check` mode |
 | `vibe_api` | JSON endpoint stressor |
 | `maelstrom` | Go authorized-target load tester (`vibe.py maelstrom ...`); double-gated + rate-capped |
-| `hyperion` | **Next-gen guarded resilience, multi-profile & SLO load engine** (`vibe.py hyperion --guard XXLMILLEAMEAN ...`) — dual Go HTTP/2 + Python keep-alive engine supporting `constant`/`ramp`/`step`/`spike` profiles, multi-endpoint rotation, Reservoir-sampled `p50/p90/p95/p99/p99.9` + jitter ($\sigma$), smart circuit breaker, and CI/CD SLO gates (`--slo-p95`, `--slo-err-pct`) |
+| `hyperion` | **Next-gen guarded resilience, multi-profile & SLO load engine** (`vibe.py hyperion --guard XXLMILLEAMEAN ...`) — dual Go HTTP/2 + Python keep-alive engine supporting `constant`/`ramp`/`step`/`spike` profiles, multi-endpoint rotation, Fixed-width bucket estimates of `p50/p90/p95/p99/p99.9` + jitter ($\sigma$), smart circuit breaker, and CI/CD SLO gates (`--slo-p95`, `--slo-err-pct`) |
 
 ## 📊 Reporting & Session
 Turn findings into receipts; manage the workspace.
@@ -142,3 +142,4 @@ Candidates to split into a separate `network/` toolkit.
 _Web-app pentest tools + demos + reporting/session utilities in `TOOLS/`, plus
 the Go `maelstrom` load tester. The plan/subscription system has been removed —
 the only gates are the load-test allowlist and the `locked` typed-confirmation._
+

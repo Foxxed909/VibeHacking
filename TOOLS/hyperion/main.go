@@ -30,7 +30,7 @@ const (
 	guardCode          = "XXLMILLEAMEAN"
 	maxExternalRPS     = 9999.99
 	maxExternalWorkers = 256
-	// 14x Maelstrom's 250,000 RPS private lab ceiling (3,500,000 RPS)
+	// Requested-rate validation ceiling; not measured throughput.
 	maxPrivateRPS = 3500000.0
 	// O(1) HDR-style histogram: 60,000 buckets of 0.1ms (100us) from 0ms to 6000ms + overflow
 	histBuckets   = 60000
@@ -91,6 +91,8 @@ type liveCounters struct {
 	statusOther         atomic.Int64
 	errors              atomic.Int64
 	assertFails         atomic.Int64
+	successful          atomic.Int64
+	failed              atomic.Int64
 	cacheHits           atomic.Int64
 	cacheMisses         atomic.Int64
 	cacheDynamic        atomic.Int64
@@ -114,7 +116,7 @@ type workerShard struct {
 	apdexTol    uint64
 	stageCounts [4]uint64
 	stageSumMs  [4]float64
-	stage5xxErr [4]uint64
+	stageFailures [4]uint64
 }
 
 type stageSummary struct {
@@ -193,11 +195,11 @@ func parseFlags() (config, error) {
 	flag.Float64Var(&cfg.apdexTMs, "apdex-t", 100.0, "Apdex satisfactory latency threshold T in ms (default 100ms)")
 	flag.Float64Var(&cfg.sloP95Ms, "slo-p95", 0, "Optional SLO gate: fail if p95 latency (ms) exceeds threshold")
 	flag.Float64Var(&cfg.sloP99Ms, "slo-p99", 0, "Optional SLO gate: fail if p99 latency (ms) exceeds threshold")
-	flag.Float64Var(&cfg.sloErrPct, "slo-err-pct", 0, "Optional SLO gate: fail if error/5xx rate (%) exceeds threshold")
+	flag.Float64Var(&cfg.sloErrPct, "slo-err-pct", 0, "Failed-request percentage budget including 4xx, assertions and challenges (default 0)")
 	flag.Float64Var(&cfg.sloApdex, "slo-apdex", 0, "Optional SLO gate: fail if Apdex score (0.0-1.0) is below threshold")
-	flag.Float64Var(&cfg.sloMinRPS, "slo-min-rps", 0, "Optional SLO gate: fail if achieved RPS is below threshold")
-	flag.BoolVar(&cfg.circuitBreaker, "circuit-breaker", true, "Auto-abort if target 5xx/error rate exceeds abort-5xx-pct after 50+ requests")
-	flag.Float64Var(&cfg.abort5xxPct, "abort-5xx-pct", 80.0, "Circuit-breaker error/5xx percentage threshold (default 80%)")
+	flag.Float64Var(&cfg.sloMinRPS, "slo-min-rps", 0, "Optional SLO gate: fail if successful-response RPS is below threshold")
+	flag.BoolVar(&cfg.circuitBreaker, "circuit-breaker", true, "Auto-abort if failed-request rate exceeds abort-5xx-pct after 50+ requests")
+	flag.Float64Var(&cfg.abort5xxPct, "abort-5xx-pct", 80.0, "Circuit-breaker failed-request percentage threshold (default 80%)")
 	flag.StringVar(&cfg.reportFile, "report-file", "", "Optional Markdown report output path")
 	flag.StringVar(&cfg.jsonFile, "json-out", "", "Optional JSON telemetry output path")
 	flag.Var(&cfg.headers, "headers", "Custom header 'Name: value' (repeatable)")
@@ -240,6 +242,20 @@ func parseFlags() (config, error) {
 	}
 	if cfg.timeout <= 0 {
 		return cfg, fmt.Errorf("timeout must be greater than zero")
+	}
+	for name, value := range map[string]float64{
+		"apdex-t": cfg.apdexTMs, "slo-p95": cfg.sloP95Ms, "slo-p99": cfg.sloP99Ms,
+		"slo-min-rps": cfg.sloMinRPS, "slo-apdex": cfg.sloApdex, "abort-5xx-pct": cfg.abort5xxPct,
+	} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return cfg, fmt.Errorf("%s must be finite and non-negative", name)
+		}
+	}
+	if cfg.abort5xxPct <= 0 || cfg.abort5xxPct > 100 || cfg.sloApdex > 1 {
+		return cfg, fmt.Errorf("abort-5xx-pct must be in (0, 100]; slo-apdex must be in [0, 1]")
+	}
+	if math.IsNaN(cfg.sloErrPct) || math.IsInf(cfg.sloErrPct, 0) || cfg.sloErrPct < 0 || cfg.sloErrPct > 100 {
+		return cfg, fmt.Errorf("slo-err-pct must be between 0 and 100")
 	}
 	if cfg.apdexTMs <= 0 {
 		cfg.apdexTMs = 100.0
@@ -523,6 +539,7 @@ func run(cfg config) (int, error) {
 		ForceAttemptHTTP2:     true,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: cfg.timeout}
 
 	// Pre-flight baseline latency probe
@@ -534,10 +551,14 @@ func run(cfg config) (int, error) {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
 	go func() {
-		<-sig
-		fmt.Println("\nSIGINT received. Draining Hyperion sharded workers...")
-		stopNow()
+		select {
+		case <-sig:
+			fmt.Println("\nSIGINT received. Draining Hyperion sharded workers...")
+			stopNow()
+		case <-stop:
+		}
 	}()
 
 	start := time.Now()
@@ -553,7 +574,7 @@ func run(cfg config) (int, error) {
 	expectBytes := []byte(cfg.expectText)
 
 	fmt.Println("================================================================")
-	fmt.Println(" ⚡ HYPERION v2.0 — 14x Sharded Resilience, HDR & SLO Engine")
+	fmt.Println(" ⚡ HYPERION v2.0 — Response Measurement, HDR & SLO Engine")
 	fmt.Println("================================================================")
 	fmt.Printf("target=%s endpoints=%d profile=%s method=%s duration=%s workers=%d rate=%s\n",
 		cfg.target, len(specs), cfg.profile, cfg.method, cfg.duration, cfg.workers, cfg.rate)
@@ -639,7 +660,12 @@ func run(cfg config) (int, error) {
 				req, err := http.NewRequest(cfg.method, targetURL, bodyReader)
 				if err != nil {
 					live.errors.Add(1)
-					shard.stage5xxErr[stageIdx]++
+					live.failed.Add(1)
+					shard.count++
+					shard.hist[0]++
+					shard.stageCounts[stageIdx]++
+					shard.stageFailures[stageIdx]++
+					checkCircuitBreaker(&live, cfg, stopNow)
 					continue
 				}
 				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
@@ -662,6 +688,26 @@ func run(cfg config) (int, error) {
 				}
 
 				resp, err := client.Do(req)
+				var nBytes int64
+				assertOk := true
+				if err == nil {
+					var readErr error
+					if len(expectBytes) > 0 {
+						buf, firstErr := io.ReadAll(io.LimitReader(resp.Body, 65536))
+						assertOk = bytes.Contains(buf, expectBytes)
+						rest, drainErr := io.Copy(io.Discard, resp.Body)
+						nBytes = int64(len(buf)) + rest
+						readErr = firstErr
+						if readErr == nil {
+							readErr = drainErr
+						}
+					} else {
+						nBytes, readErr = io.Copy(io.Discard, resp.Body)
+					}
+					_ = resp.Body.Close()
+					err = readErr
+				}
+				live.bytes.Add(nBytes)
 				latMicros := time.Since(reqStart).Microseconds()
 				latMs := float64(latMicros) / 1000.0
 				live.sumMicros.Add(latMicros)
@@ -690,25 +736,11 @@ func run(cfg config) (int, error) {
 
 				if err != nil {
 					live.errors.Add(1)
-					shard.stage5xxErr[stageIdx]++
+					live.failed.Add(1)
+					shard.stageFailures[stageIdx]++
 					checkCircuitBreaker(&live, cfg, stopNow)
 					continue
 				}
-
-				var nBytes int64
-				assertOk := true
-				if len(expectBytes) > 0 {
-					buf, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
-					nBytes = int64(len(buf))
-					if !bytes.Contains(buf, expectBytes) {
-						assertOk = false
-					}
-					_, _ = io.Copy(io.Discard, resp.Body)
-				} else {
-					nBytes, _ = io.Copy(io.Discard, resp.Body)
-				}
-				_ = resp.Body.Close()
-				live.bytes.Add(nBytes)
 
 				// Inspect Cloudflare / Vercel / AWS CloudFront edge cache & WAF headers
 				cacheHdr := strings.ToLower(resp.Header.Get("CF-Cache-Status") + " " + resp.Header.Get("X-Vercel-Cache") + " " + resp.Header.Get("X-Cache"))
@@ -722,7 +754,8 @@ func run(cfg config) (int, error) {
 				case strings.Contains(cacheHdr, "bypass"):
 					live.cacheBypass.Add(1)
 				}
-				if resp.Header.Get("CF-Mitigated") != "" || resp.Header.Get("X-Vercel-Mitigated") != "" || resp.Header.Get("X-Amzn-Waf-Action") != "" {
+				challenged := resp.Header.Get("CF-Mitigated") != "" || resp.Header.Get("X-Vercel-Mitigated") != "" || resp.Header.Get("X-Amzn-Waf-Action") != ""
+				if challenged {
 					live.wafChallenges.Add(1)
 				}
 				errHdr := strings.ToLower(resp.Header.Get("X-Vercel-Error") + " " + resp.Header.Get("X-Amzn-ErrorType"))
@@ -738,19 +771,26 @@ func run(cfg config) (int, error) {
 				}
 
 				st := resp.StatusCode
+				failed := requestFailed(st, false, assertOk, challenged)
+				if failed {
+					live.failed.Add(1)
+					shard.stageFailures[stageIdx]++
+				} else {
+					live.successful.Add(1)
+				}
 				switch {
 				case st >= 200 && st < 300:
 					live.status2xx.Add(1)
-					if latMs <= cfg.apdexTMs {
+					if !failed && latMs <= cfg.apdexTMs {
 						shard.apdexSat++
-					} else if latMs <= cfg.apdexTMs*4.0 {
+					} else if !failed && latMs <= cfg.apdexTMs*4.0 {
 						shard.apdexTol++
 					}
 				case st >= 300 && st < 400:
 					live.status3xx.Add(1)
-					if latMs <= cfg.apdexTMs {
+					if !failed && latMs <= cfg.apdexTMs {
 						shard.apdexSat++
-					} else if latMs <= cfg.apdexTMs*4.0 {
+					} else if !failed && latMs <= cfg.apdexTMs*4.0 {
 						shard.apdexTol++
 					}
 				case st == 429:
@@ -763,11 +803,10 @@ func run(cfg config) (int, error) {
 					if st >= 520 && st <= 526 {
 						live.statusCF52x.Add(1)
 					}
-					shard.stage5xxErr[stageIdx]++
-					checkCircuitBreaker(&live, cfg, stopNow)
 				default:
 					live.statusOther.Add(1)
 				}
+				checkCircuitBreaker(&live, cfg, stopNow)
 			}
 		}(wID, &shards[wID])
 	}
@@ -784,7 +823,7 @@ func run(cfg config) (int, error) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				curTotal := live.total.Load()
+				curTotal := live.successful.Load() + live.failed.Load()
 				curMicros := live.sumMicros.Load()
 				deltaReq := curTotal - prevTotal
 				deltaMicros := curMicros - prevMicros
@@ -806,10 +845,12 @@ func run(cfg config) (int, error) {
 	stopNow()
 	<-monitorDone
 
+	elapsed := time.Since(start)
+
 	// Post-load recovery probe
 	postStatus, postLatencyMs := probeSingleLatency(client, ringURLs[0], cfg.method, headerMap)
 
-	report, sloFailed := mergeAndReport(cfg, specs, start, &live, shards, preStatus, preLatencyMs, postStatus, postLatencyMs)
+	report, sloFailed := mergeAndReport(cfg, specs, elapsed, &live, shards, preStatus, preLatencyMs, postStatus, postLatencyMs)
 	fmt.Println(report)
 
 	if cfg.reportFile != "" {
@@ -823,18 +864,22 @@ func run(cfg config) (int, error) {
 	return 0, nil
 }
 
+func requestFailed(status int, transportError, assertionOK, challenged bool) bool {
+	return transportError || status < 200 || status >= 400 || !assertionOK || challenged
+}
+
 func checkCircuitBreaker(live *liveCounters, cfg config, stopNow func()) {
 	if !cfg.circuitBreaker || live.tripped.Load() {
 		return
 	}
-	tot := live.total.Load()
+	tot := live.successful.Load() + live.failed.Load()
 	if tot < 50 {
 		return
 	}
-	bad := live.status5xx.Load() + live.errors.Load()
+	bad := live.failed.Load()
 	if (float64(bad)*100.0)/float64(tot) >= cfg.abort5xxPct {
 		if live.tripped.CompareAndSwap(false, true) {
-			fmt.Printf("\n[!] CIRCUIT BREAKER TRIPPED: error/5xx rate >= %.1f%%. Halting load to protect target.\n", cfg.abort5xxPct)
+			fmt.Printf("\n[!] CIRCUIT BREAKER TRIPPED: failed-request rate >= %.1f%%. Halting load to protect target.\n", cfg.abort5xxPct)
 			stopNow()
 		}
 	}
@@ -843,7 +888,7 @@ func checkCircuitBreaker(live *liveCounters, cfg config, stopNow func()) {
 func mergeAndReport(
 	cfg config,
 	specs []weightedEndpoint,
-	start time.Time,
+	elapsed time.Duration,
 	live *liveCounters,
 	shards []workerShard,
 	preStatus int,
@@ -851,13 +896,12 @@ func mergeAndReport(
 	postStatus int,
 	postLatencyMs float64,
 ) (string, bool) {
-	elapsed := time.Since(start)
 	var mergedHist [histBuckets]uint64
 	var totalCount, overflow, apdexSat, apdexTol uint64
 	var sumMs, sumSqMs, minMs, maxMs float64
 	var stageCounts [4]uint64
 	var stageSumMs [4]float64
-	var stage5xxErr [4]uint64
+	var stageFailures [4]uint64
 
 	for _, s := range shards {
 		if s.count == 0 {
@@ -878,7 +922,7 @@ func mergeAndReport(
 		for i := 0; i < 4; i++ {
 			stageCounts[i] += s.stageCounts[i]
 			stageSumMs[i] += s.stageSumMs[i]
-			stage5xxErr[i] += s.stage5xxErr[i]
+			stageFailures[i] += s.stageFailures[i]
 		}
 		for b := 0; b < histBuckets; b++ {
 			mergedHist[b] += s.hist[b]
@@ -931,9 +975,12 @@ func mergeAndReport(
 	s5xx := live.status5xx.Load()
 	errs := live.errors.Load()
 	assertFails := live.assertFails.Load()
+	successful := live.successful.Load()
+	failed := live.failed.Load()
+	successfulRPS := float64(successful) / math.Max(elapsed.Seconds(), 0.001)
 	errPct := 0.0
 	if totalCount > 0 {
-		errPct = (float64(s5xx+errs) * 100.0) / float64(totalCount)
+		errPct = (float64(failed) * 100.0) / float64(totalCount)
 	}
 
 	slowdown := 1.0
@@ -952,7 +999,7 @@ func mergeAndReport(
 		sErr := 0.0
 		if c > 0 {
 			sAvg = stageSumMs[i] / float64(c)
-			sErr = (float64(stage5xxErr[i]) * 100.0) / float64(c)
+			sErr = (float64(stageFailures[i]) * 100.0) / float64(c)
 		}
 		sRPS := float64(c) / stageDur
 		if i == 0 {
@@ -972,6 +1019,14 @@ func mergeAndReport(
 
 	sloFailed := false
 	var sloNotes []string
+	if totalCount == 0 || successful == 0 {
+		sloFailed = true
+		sloNotes = append(sloNotes, "FAIL: no successful requests measured")
+	}
+	if assertFails > 0 {
+		sloFailed = true
+		sloNotes = append(sloNotes, fmt.Sprintf("FAIL: %d response assertion(s) failed", assertFails))
+	}
 	if cfg.sloP95Ms > 0 {
 		if p95 > cfg.sloP95Ms {
 			sloFailed = true
@@ -988,12 +1043,12 @@ func mergeAndReport(
 			sloNotes = append(sloNotes, fmt.Sprintf("PASS: p99 %.2fms <= %.2fms", p99, cfg.sloP99Ms))
 		}
 	}
-	if cfg.sloErrPct > 0 {
+	if totalCount > 0 {
 		if errPct > cfg.sloErrPct {
 			sloFailed = true
-			sloNotes = append(sloNotes, fmt.Sprintf("FAIL: err/5xx %.2f%% > %.2f%%", errPct, cfg.sloErrPct))
+			sloNotes = append(sloNotes, fmt.Sprintf("FAIL: failed requests %.2f%% > %.2f%%", errPct, cfg.sloErrPct))
 		} else {
-			sloNotes = append(sloNotes, fmt.Sprintf("PASS: err/5xx %.2f%% <= %.2f%%", errPct, cfg.sloErrPct))
+			sloNotes = append(sloNotes, fmt.Sprintf("PASS: failed requests %.2f%% <= %.2f%%", errPct, cfg.sloErrPct))
 		}
 	}
 	if cfg.sloApdex > 0 {
@@ -1005,21 +1060,22 @@ func mergeAndReport(
 		}
 	}
 	if cfg.sloMinRPS > 0 {
-		if rps < cfg.sloMinRPS {
+		if successfulRPS < cfg.sloMinRPS {
 			sloFailed = true
-			sloNotes = append(sloNotes, fmt.Sprintf("FAIL: RPS %.1f < %.1f", rps, cfg.sloMinRPS))
+			sloNotes = append(sloNotes, fmt.Sprintf("FAIL: successful RPS %.1f < %.1f", successfulRPS, cfg.sloMinRPS))
 		} else {
-			sloNotes = append(sloNotes, fmt.Sprintf("PASS: RPS %.1f >= %.1f", rps, cfg.sloMinRPS))
+			sloNotes = append(sloNotes, fmt.Sprintf("PASS: successful RPS %.1f >= %.1f", successfulRPS, cfg.sloMinRPS))
 		}
 	}
 
-	// Compute HMAC-SHA256 tamper-evident run receipt
+	// Legacy checksum uses a published constant, not independent authentication.
 	sigInput := fmt.Sprintf("hyperion|%s|%d|%.2f|%.2f|%t", cfg.target, totalCount, rps, p95, sloFailed)
 	mac := hmac.New(sha256.New, []byte(guardCode))
 	mac.Write([]byte(sigInput))
 	receiptSig := hex.EncodeToString(mac.Sum(nil))[:24]
 
 	if cfg.jsonFile != "" {
+		requestedRPS, _ := parseRate(cfg.rate)
 		payload := map[string]any{
 			"engine":            "hyperion-go-sharded-hdr",
 			"version":           "2.0.0",
@@ -1032,6 +1088,12 @@ func mergeAndReport(
 			"workers":           cfg.workers,
 			"total_requests":    totalCount,
 			"average_rps":       rps,
+			"requested_rate":    cfg.rate,
+			"requested_rps":     requestedRPS,
+			"successful_requests": successful,
+			"failed_requests":     failed,
+			"successful_rps":      successfulRPS,
+			"histogram_overflow":  overflow,
 			"saturation_knee":   kneeRPS,
 			"apdex_score":       apdex,
 			"status_2xx":        s2xx,
@@ -1062,8 +1124,16 @@ func mergeAndReport(
 				"max":    maxMs,
 			},
 		}
-		if raw, err := json.MarshalIndent(payload, "", "  "); err == nil {
-			_ = os.WriteFile(cfg.jsonFile, raw, 0o644)
+		raw, writeErr := json.MarshalIndent(payload, "", "  ")
+		if writeErr == nil {
+			writeErr = os.MkdirAll(filepath.Dir(cfg.jsonFile), 0o755)
+		}
+		if writeErr == nil {
+			writeErr = os.WriteFile(cfg.jsonFile, raw, 0o644)
+		}
+		if writeErr != nil {
+			sloFailed = true
+			sloNotes = append(sloNotes, fmt.Sprintf("FAIL: JSON report: %v", writeErr))
 		}
 	}
 
@@ -1072,12 +1142,13 @@ func mergeAndReport(
 	fmt.Fprintf(&b, "- Target: `%s` (%d weighted endpoint(s))\n", cfg.target, len(specs))
 	fmt.Fprintf(&b, "- Profile / Method / Workers: `%s` / `%s` / `%d`\n", cfg.profile, cfg.method, cfg.workers)
 	fmt.Fprintf(&b, "- Total Requests / Throughput: `%d` (`%.1f RPS` over `%s`)\n", totalCount, rps, elapsed.Round(time.Millisecond))
+	fmt.Fprintf(&b, "- Successful / Failed Requests: `%d / %d` | Successful Throughput: `%.1f RPS`\n", successful, failed, successfulRPS)
 	fmt.Fprintf(&b, "- Apdex Score (T=%.0fms): `%.3f` | Saturation Knee: `%s`\n",
 		cfg.apdexTMs, apdex, func() string {
 			if kneeRPS > 0 {
 				return fmt.Sprintf("%.1f RPS", kneeRPS)
 			}
-			return "none (target scaled linearly)"
+			return "not observed in this sample"
 		}())
 	fmt.Fprintf(&b, "- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / err): `%d / %d / %d / %d / %d / %d` (err rate: `%.2f%%`)\n",
 		s2xx, s3xx, s4xx, s429, s5xx, errs, errPct)
@@ -1152,12 +1223,15 @@ func parseRate(raw string) (float64, error) {
 		s = strings.TrimSuffix(s, "g")
 	}
 	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil || v < 0 {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return 0, fmt.Errorf("invalid rate %q", raw)
 	}
 	v *= mult
 	if perMinute {
 		v /= 60.0
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("invalid rate %q", raw)
 	}
 	return v, nil
 }
@@ -1166,3 +1240,4 @@ func exitError(err error) {
 	fmt.Fprintf(os.Stderr, "hyperion: %v\n", err)
 	os.Exit(2)
 }
+

@@ -1,30 +1,9 @@
 #!/usr/bin/env python3
-"""
-hyperion.py v2.1 — 14x Sharded Resilience, HDR Histogram, Cloud/Edge (Cloudflare, AWS, Vercel) & SLO Load Engine.
+"""Hyperion: authorized load-test profiles, edge telemetry, and response SLOs.
 
-Hyperion v2.1 is VibeHacking's next-generation competitor to Maelstrom:
-  1. Mandatory `XXLMILLEAMEAN` constant-time cryptographic guard + audit log
-  2. Tamper-evident HMAC-SHA256 signed run receipt (`receipt_hmac`)
-  3. 14x Private-Lab Ceiling (3,500,000 RPS max private cap vs Maelstrom's 250k)
-     while strictly enforcing 9999.99 RPS / 256 workers + `authorized_targets.txt`
-     on external targets (including Cloudflare, AWS, and `.vercel.app` apps)
-  4. Native Cloudflare, AWS (CloudFront / ALB / API Gateway / Lambda), and Vercel (`.vercel.app`) Support:
-     - Explicit TLS ALPN (`http/1.1`) & SNI override (`--sni`, `--resolve`) for Cloudflare/Vercel/AWS TLS 1.3 edges
-     - Preflight canonical redirect follower (`--follow-redirects`) for `301/302/307/308` edge redirects
-     - Edge Cache Modes (`--edge-mode {auto,cdn-cache,origin-bypass}`) to test either CDN edge absorption or origin/serverless capacity
-     - Provider Protection Bypasses:
-       * Vercel Protection Bypass (`--vercel-bypass` / `VERCEL_AUTOMATION_BYPASS_SECRET`)
-       * Cloudflare Access Service Tokens (`--cf-access-id`, `--cf-access-secret`)
-       * AWS API Gateway Key (`--aws-api-key`)
-     - Real-time Edge Telemetry: auto-detects provider (`cloudflare`, `vercel`, `aws-cloudfront`, `aws-alb-apigw`),
-       PoP/region codes (`CF-Ray`, `x-vercel-id`, `x-amz-cf-pop`), Edge Cache HIT/MISS/DYNAMIC/BYPASS ratios,
-       WAF/Bot challenges (`cf-mitigated`, AWS WAF, Vercel Firewall), Cloudflare `520-526` origin errors,
-       and Vercel/Lambda serverless cold-start or concurrency throttles
-  5. Dual Sharded Engine: Lock-free Go HTTP/2 engine (`TOOLS/hyperion/main.go`) +
-     Lock-free Python `asyncio` raw HTTP/1.1 Keep-Alive + `TCP_NODELAY` socket-pool engine
-  6. 6 Load Profiles: `constant`, `ramp`, `step`, `spike`, `sawtooth`, `stress-knee`
-  7. Automatic Saturation Knee Detector, Weighted Multi-Endpoint Ring, Dynamic Request Macros,
-     O(1) 60,000-bucket HDR Histogram, Apdex Score, Pre/Post Recovery Probe, Circuit Breaker & 5 SLO Gates
+Requested-rate ceilings are input validation, not measured performance. Reports
+separate completed traffic from successful responses. The published guard code
+is confirmation friction; its HMAC receipt does not authenticate a report.
 """
 import argparse
 import asyncio
@@ -53,7 +32,7 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUARD_CODE = "XXLMILLEAMEAN"
 MAX_EXTERNAL_RPS = 9999.99
 MAX_EXTERNAL_WORKERS = 256
-# 14x Maelstrom's 250,000 RPS private lab cap (3,500,000 RPS)
+# Requested-rate validation ceiling; this is not measured throughput.
 MAX_PRIVATE_RPS = 3_500_000.0
 HIST_BUCKETS = 60_000
 HIST_STEP_MS = 0.1  # 100 microsecond (0.1ms) bucket resolution up to 6,000ms
@@ -104,7 +83,10 @@ def _parse_duration(raw):
             mult = scale
             s = s[: -len(suffix)]
             break
-    return max(0.1, float(s.strip()) * mult)
+    seconds = float(s.strip()) * mult
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("duration must be finite and positive")
+    return max(0.1, seconds)
 
 
 def _parse_rate(raw):
@@ -132,9 +114,38 @@ def _parse_rate(raw):
         mult = 1_000_000_000.0
         s = s[:-1]
     val = float(s.strip()) * mult
-    if val < 0:
-        raise ValueError("rate cannot be negative")
+    if not math.isfinite(val) or val < 0:
+        raise ValueError("rate must be finite and non-negative")
     return val / 60.0 if per_min else val
+
+
+def _same_origin(left, right):
+    """Never replay a captured profile's credentials to a different origin."""
+    def origin(raw):
+        parsed = urllib.parse.urlsplit(raw or "")
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname.lower(), port
+
+    try:
+        left_origin = origin(left)
+        return left_origin is not None and left_origin == origin(right)
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _go_toolchain_available(go_dir):
+    """An unrelated executable named 'go' must not break automatic fallback."""
+    executable = shutil.which("go")
+    if not executable or not os.path.isfile(os.path.join(go_dir, "main.go")):
+        return False
+    try:
+        result = subprocess.run([executable, "version"], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=3)
+        return result.returncode == 0 and (result.stdout or "").startswith("go version go")
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _is_local_or_private(host):
@@ -302,6 +313,8 @@ class _WorkerShard:
         "sother",
         "errors",
         "assert_fails",
+        "successful",
+        "failed",
         "bytes_read",
         "sum_ms",
         "sum_sq_ms",
@@ -311,7 +324,7 @@ class _WorkerShard:
         "apdex_tol",
         "stage_counts",
         "stage_sum_ms",
-        "stage_5xx_err",
+        "stage_failures",
         "cache_hits",
         "cache_misses",
         "cache_dynamic",
@@ -334,6 +347,8 @@ class _WorkerShard:
         self.sother = 0
         self.errors = 0
         self.assert_fails = 0
+        self.successful = 0
+        self.failed = 0
         self.bytes_read = 0
         self.sum_ms = 0.0
         self.sum_sq_ms = 0.0
@@ -343,7 +358,7 @@ class _WorkerShard:
         self.apdex_tol = 0
         self.stage_counts = [0, 0, 0, 0]
         self.stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
-        self.stage_5xx_err = [0, 0, 0, 0]
+        self.stage_failures = [0, 0, 0, 0]
         self.cache_hits = 0
         self.cache_misses = 0
         self.cache_dynamic = 0
@@ -390,6 +405,14 @@ class _WorkerShard:
         if not assert_ok:
             self.assert_fails += 1
 
+        request_failed = (err_flag or not 200 <= status < 400
+                          or not assert_ok or waf_challenged)
+        if request_failed:
+            self.failed += 1
+        else:
+            self.successful += 1
+        self.stage_failures[stage_idx] += int(request_failed)
+
         if cache_state == "HIT":
             self.cache_hits += 1
         elif cache_state == "MISS":
@@ -408,18 +431,17 @@ class _WorkerShard:
 
         if err_flag or status == 0:
             self.errors += 1
-            self.stage_5xx_err[stage_idx] += 1
         elif 200 <= status < 300:
             self.s2xx += 1
-            if lat_ms <= apdex_t:
+            if not request_failed and lat_ms <= apdex_t:
                 self.apdex_sat += 1
-            elif lat_ms <= apdex_t * 4.0:
+            elif not request_failed and lat_ms <= apdex_t * 4.0:
                 self.apdex_tol += 1
         elif 300 <= status < 400:
             self.s3xx += 1
-            if lat_ms <= apdex_t:
+            if not request_failed and lat_ms <= apdex_t:
                 self.apdex_sat += 1
-            elif lat_ms <= apdex_t * 4.0:
+            elif not request_failed and lat_ms <= apdex_t * 4.0:
                 self.apdex_tol += 1
         elif status == 429:
             self.s4xx += 1
@@ -430,14 +452,13 @@ class _WorkerShard:
             self.s5xx += 1
             if 520 <= status <= 526:
                 self.cf_52x_errors += 1
-            self.stage_5xx_err[stage_idx] += 1
         else:
             self.sother += 1
 
 
 class Hyperion(VibeTool):
     def __init__(self):
-        super().__init__("Hyperion", "14x Sharded Resilience, Cloud/Edge (Cloudflare/AWS/Vercel) & SLO Engine")
+        super().__init__("Hyperion", "Cloud/Edge Response Measurement & SLO Engine")
         self._tls_ctx = ssl.create_default_context()
         # Explicitly advertise HTTP/1.1 in TLS ALPN so Cloudflare, Vercel (.vercel.app),
         # and AWS CloudFront/ALB TLS 1.3 edges frame responses as HTTP/1.1 on raw sockets.
@@ -856,7 +877,7 @@ class Hyperion(VibeTool):
                     if circuit_breaker and shard.count >= 20 and (seq % 16 == 0):
                         tot_req = sum(s.count for s in shards)
                         if tot_req >= 50:
-                            bad_req = sum(s.s5xx + s.errors for s in shards)
+                            bad_req = sum(s.failed for s in shards)
                             if (bad_req * 100.0 / tot_req) >= abort_5xx_pct:
                                 tripped = True
                                 stop_flag = True
@@ -977,7 +998,7 @@ class Hyperion(VibeTool):
         # Automatically inherit any zero-key BotBreaker persona/cookies from vibe_session.json
         surface = self.get_surface()
         agent_profile = surface.get("agent_profile", {}) if isinstance(surface, dict) else {}
-        if isinstance(agent_profile, dict):
+        if isinstance(agent_profile, dict) and _same_origin(agent_profile.get("target", ""), target):
             prof_hdrs = agent_profile.get("headers")
             if isinstance(prof_hdrs, dict):
                 for pk, pv in prof_hdrs.items():
@@ -1101,11 +1122,12 @@ class Hyperion(VibeTool):
         # Merge lock-free worker shards
         merged_hist = {}
         total = overflow = s2xx = s3xx = s4xx = s429 = s5xx = sother = errors = assert_fails = 0
+        successful = failed = 0
         sum_ms = sum_sq_ms = min_ms = max_ms = 0.0
         apdex_sat = apdex_tol = 0
         stage_counts = [0, 0, 0, 0]
         stage_sum_ms = [0.0, 0.0, 0.0, 0.0]
-        stage_5xx_err = [0, 0, 0, 0]
+        stage_failures = [0, 0, 0, 0]
         cache_hits = cache_misses = cache_dynamic = cache_bypass = 0
         waf_challenges = cf_52x_errors = serverless_throttles = 0
         edge_pops = set(pre_pops)
@@ -1127,6 +1149,8 @@ class Hyperion(VibeTool):
             sother += s.sother
             errors += s.errors
             assert_fails += s.assert_fails
+            successful += s.successful
+            failed += s.failed
             sum_ms += s.sum_ms
             sum_sq_ms += s.sum_sq_ms
             apdex_sat += s.apdex_sat
@@ -1142,7 +1166,7 @@ class Hyperion(VibeTool):
             for i in range(4):
                 stage_counts[i] += s.stage_counts[i]
                 stage_sum_ms[i] += s.stage_sum_ms[i]
-                stage_5xx_err[i] += s.stage_5xx_err[i]
+                stage_failures[i] += s.stage_failures[i]
             for b, cnt in s.hist.items():
                 merged_hist[b] = merged_hist.get(b, 0) + cnt
 
@@ -1172,7 +1196,8 @@ class Hyperion(VibeTool):
         jitter_ms = math.sqrt(variance) if variance > 0 else 0.0
         apdex = ((apdex_sat + 0.5 * apdex_tol) / float(total)) if total > 0 else 0.0
         rps = total / elapsed
-        err_pct = ((s5xx + errors) * 100.0 / total) if total > 0 else 0.0
+        err_pct = (failed * 100.0 / total) if total > 0 else 0.0
+        successful_rps = successful / elapsed
         slowdown = (post_lat_ms / pre_lat_ms) if pre_lat_ms > 0 and post_lat_ms > 0 else 1.0
         cache_classified = cache_hits + cache_misses + cache_dynamic + cache_bypass
         cache_hit_pct = (cache_hits * 100.0 / cache_classified) if cache_classified > 0 else 0.0
@@ -1186,7 +1211,7 @@ class Hyperion(VibeTool):
         for i in range(4):
             c = stage_counts[i]
             s_avg = (stage_sum_ms[i] / c) if c > 0 else 0.0
-            s_err = (stage_5xx_err[i] * 100.0 / c) if c > 0 else 0.0
+            s_err = (stage_failures[i] * 100.0 / c) if c > 0 else 0.0
             s_rps = c / stage_dur
             if i == 0:
                 q1_avg = s_avg
@@ -1203,12 +1228,18 @@ class Hyperion(VibeTool):
 
         if tripped:
             self.log(
-                f"CIRCUIT BREAKER TRIPPED: >= {abort_5xx_pct:.1f}% error/5xx rate detected. Load halted.",
+                f"CIRCUIT BREAKER TRIPPED: >= {abort_5xx_pct:.1f}% failed requests. Load halted.",
                 "crit",
             )
 
         slo_failed = False
         slo_notes = []
+        if total == 0 or successful == 0:
+            slo_failed = True
+            slo_notes.append("FAIL: no successful requests measured")
+        if assert_fails:
+            slo_failed = True
+            slo_notes.append(f"FAIL: {assert_fails} response assertion(s) failed")
         if slo_p95 and slo_p95 > 0:
             ok = p95 <= slo_p95
             slo_failed = slo_failed or (not ok)
@@ -1217,24 +1248,25 @@ class Hyperion(VibeTool):
             ok = p99 <= slo_p99
             slo_failed = slo_failed or (not ok)
             slo_notes.append(f"{'PASS' if ok else 'FAIL'}: p99 {p99:.2f}ms <= {slo_p99:.2f}ms")
-        if slo_err_pct and slo_err_pct > 0:
+        # No explicit error budget means zero tolerated failed requests.
+        if total > 0:
             ok = err_pct <= slo_err_pct
             slo_failed = slo_failed or (not ok)
-            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: err/5xx {err_pct:.2f}% <= {slo_err_pct:.2f}%")
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: failed requests {err_pct:.2f}% <= {slo_err_pct:.2f}%")
         if slo_apdex and slo_apdex > 0:
             ok = apdex >= slo_apdex
             slo_failed = slo_failed or (not ok)
             slo_notes.append(f"{'PASS' if ok else 'FAIL'}: Apdex {apdex:.3f} >= {slo_apdex:.3f}")
         if slo_min_rps and slo_min_rps > 0:
-            ok = rps >= slo_min_rps
+            ok = successful_rps >= slo_min_rps
             slo_failed = slo_failed or (not ok)
-            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: RPS {rps:.1f} >= {slo_min_rps:.1f}")
+            slo_notes.append(f"{'PASS' if ok else 'FAIL'}: successful RPS {successful_rps:.1f} >= {slo_min_rps:.1f}")
 
         sig_input = f"hyperion|{target}|{total}|{rps:.2f}|{p95:.2f}|{slo_failed}".encode("utf-8")
         receipt_hmac = hmac.new(GUARD_CODE.encode("utf-8"), sig_input, hashlib.sha256).hexdigest()[:24]
 
         self.log(
-            f"Completed {total} req in {elapsed:.2f}s ({rps:.1f} RPS) | Apdex={apdex:.3f} | "
+            f"Completed {total} req in {elapsed:.2f}s ({rps:.1f} total RPS, {successful_rps:.1f} successful RPS) | Apdex={apdex:.3f} | "
             f"2xx={s2xx} 3xx={s3xx} 4xx={s4xx}(429:{s429}) 5xx={s5xx}(CF52x:{cf_52x_errors}) err={errors} ({err_pct:.2f}%)",
             "pass" if not (tripped or slo_failed) else "crit",
         )
@@ -1258,7 +1290,7 @@ class Hyperion(VibeTool):
             f"  - {st['label']}: `{st['requests']} req` | `{st['rps']:.1f} RPS` | `avg={st['avg_ms']:.2f}ms` | `err={st['error_rate_pct']:.2f}%`"
             for st in stages
         )
-        knee_desc = f"{knee_rps:.1f} RPS" if knee_rps > 0 else "none (linear scaling maintained)"
+        knee_desc = f"{knee_rps:.1f} RPS" if knee_rps > 0 else "not observed in this sample"
 
         md_report = (
             "\n## ⚡ Hyperion v2.1 Cloud/Edge Resilience, HDR & SLO Report\n\n"
@@ -1266,8 +1298,9 @@ class Hyperion(VibeTool):
             f"- Cloud / Edge Provider: `{provider_str}` | PoP(s): `{', '.join(sorted(edge_pops)) or 'local/direct'}` | Edge Mode: `{edge_mode}`\n"
             f"- Profile / Method / Workers: `{profile}` / `{method}` / `{workers}`\n"
             f"- Total Requests / Throughput: `{total}` (`{rps:.1f} RPS` over `{elapsed:.2f}s`)\n"
+            f"- Successful / Failed Requests: `{successful} / {failed}` | Successful Throughput: `{successful_rps:.1f} RPS`\n"
             f"- Apdex Score (T={apdex_t:.0f}ms): `{apdex:.3f}` | Saturation Knee: `{knee_desc}`\n"
-            f"- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / CF-52x / err): `{s2xx} / {s3xx} / {s4xx} / {s429} / {s5xx} / {cf_52x_errors} / {errors}` (error/5xx rate: `{err_pct:.2f}%`)\n"
+            f"- HTTP Status (2xx / 3xx / 4xx / 429-RL / 5xx / CF-52x / err): `{s2xx} / {s3xx} / {s4xx} / {s429} / {s5xx} / {cf_52x_errors} / {errors}` (failed-request rate: `{err_pct:.2f}%`)\n"
             f"- Edge Cache (HIT / MISS / DYNAMIC / BYPASS): `{cache_hits} ({cache_hit_pct:.1f}%) / {cache_misses} / {cache_dynamic} / {cache_bypass}`\n"
             f"- Edge Protection (WAF Challenges / Serverless Throttles): `{waf_challenges} / {serverless_throttles}`\n"
             f"- Latency min / avg / jitter(σ) / max: `{min_ms:.2f}ms / {avg_ms:.2f}ms / {jitter_ms:.2f}ms / {max_ms:.2f}ms`\n"
@@ -1305,6 +1338,12 @@ class Hyperion(VibeTool):
                 "workers": workers,
                 "total_requests": total,
                 "average_rps": round(rps, 2),
+                "requested_rate": str(rate_raw),
+                "requested_rps": rate,
+                "successful_requests": successful,
+                "failed_requests": failed,
+                "successful_rps": round(successful_rps, 2),
+                "histogram_overflow": overflow,
                 "saturation_knee_rps": knee_rps,
                 "apdex_score": round(apdex, 4),
                 "status_2xx": s2xx,
@@ -1374,7 +1413,7 @@ def _confirm_external(host, rate_desc, assume_yes=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Hyperion v2.1 - 14x Sharded Resilience, Cloud/Edge (Cloudflare/AWS/Vercel) & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
+        description="Hyperion v2.1 - Authorized Cloud/Edge Measurement & SLO Load Engine (requires --guard XXLMILLEAMEAN)"
     )
     parser.add_argument("-t", "--target", "--url", dest="target", default="http://localhost:3456/", help="Target URL endpoint (e.g. https://my-app.vercel.app/)")
     parser.add_argument(
@@ -1413,7 +1452,7 @@ def main(argv=None):
         "--edge-mode",
         choices=["auto", "cdn-cache", "origin-bypass"],
         default="auto",
-        help="Cloud/CDN edge mode: 'auto', 'cdn-cache' (test edge cache), or 'origin-bypass' (bypass Cloudflare/CloudFront/Vercel cache to hit origin/serverless)",
+        help="Cloud/CDN edge mode: 'auto', 'cdn-cache' (test edge cache), or 'origin-bypass' (request cache revalidation; provider policy still applies)",
     )
     parser.add_argument(
         "--follow-redirects",
@@ -1439,17 +1478,33 @@ def main(argv=None):
     parser.add_argument("--apdex-t", type=float, default=100.0, help="Apdex satisfactory latency threshold T in ms (default: 100)")
     parser.add_argument("--slo-p95", type=float, default=0.0, help="SLO gate: fail if p95 latency (ms) exceeds threshold")
     parser.add_argument("--slo-p99", type=float, default=0.0, help="SLO gate: fail if p99 latency (ms) exceeds threshold")
-    parser.add_argument("--slo-err-pct", type=float, default=0.0, help="SLO gate: fail if 5xx/error percentage exceeds threshold")
+    parser.add_argument("--slo-err-pct", type=float, default=0.0, help="Failed-request percentage budget, including HTTP 4xx, assertions and challenges (default: 0)")
     parser.add_argument("--slo-apdex", type=float, default=0.0, help="SLO gate: fail if Apdex score (0.0-1.0) is below threshold")
-    parser.add_argument("--slo-min-rps", type=float, default=0.0, help="SLO gate: fail if achieved RPS is below threshold")
+    parser.add_argument("--slo-min-rps", type=float, default=0.0, help="SLO gate: fail if successful-response RPS is below threshold")
     parser.add_argument("--no-circuit-breaker", action="store_true", help="Disable the auto-abort circuit breaker")
-    parser.add_argument("--abort-5xx-pct", type=float, default=80.0, help="Circuit-breaker 5xx/error percentage threshold (default: 80)")
+    parser.add_argument("--abort-5xx-pct", type=float, default=80.0, help="Circuit-breaker failed-request percentage threshold (default: 80)")
     parser.add_argument("--engine", choices=["auto", "python", "go"], default="auto", help="Execution engine (default: auto)")
     parser.add_argument("--report-file", default="", help="Optional Markdown report path")
     parser.add_argument("--json-out", default="", help="Optional JSON metrics output path")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip interactive hostname prompt for trusted external hosts")
     parser.add_argument("-v", "--version", action="version", version="Hyperion 2.1.0")
     args = parser.parse_args(argv)
+
+    try:
+        _parse_duration(args.duration)
+        _parse_duration(args.timeout)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.workers < 1:
+        parser.error("workers must be positive")
+    for name in ("apdex_t", "slo_p95", "slo_p99", "slo_min_rps", "slo_apdex", "abort_5xx_pct"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0:
+            parser.error(f"{name.replace('_', '-')} must be finite and non-negative")
+    if args.apdex_t <= 0 or not 0 < args.abort_5xx_pct <= 100 or args.slo_apdex > 1:
+        parser.error("apdex-t must be positive; abort-5xx-pct must be in (0, 100]; slo-apdex must be in [0, 1]")
+    if not math.isfinite(args.slo_err_pct) or not 0 <= args.slo_err_pct <= 100:
+        parser.error("slo-err-pct must be between 0 and 100")
 
     # 1. Enforce mandatory guard code XXLMILLEAMEAN
     if not verify_guard_code(args.guard, target=args.target, interactive=not args.yes):
@@ -1500,9 +1555,9 @@ def main(argv=None):
             print(f"[-] Rate {parsed_rate:.0f} RPS exceeds local safety cap ({MAX_PRIVATE_RPS:.0f} RPS).")
             return 2
 
-    # 3. Choose Go engine if available and requested (unless Python-specific cloud resolve/edge options are used)
+    # 3. Choose the requested execution engine; rate ceilings do not predict throughput.
     go_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperion")
-    has_go = bool(shutil.which("go")) and os.path.isfile(os.path.join(go_dir, "main.go"))
+    has_go = _go_toolchain_available(go_dir)
 
     if args.engine == "go" and not has_go:
         print("[-] Go toolchain not found; use --engine auto or --engine python.")
@@ -1610,3 +1665,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
