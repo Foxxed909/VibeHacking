@@ -158,6 +158,19 @@ class HyperionTests(unittest.TestCase):
         self.assertTrue(observed)
         self.assertFalse(any(observed))
 
+    def test_preflight_does_not_forward_credentials_across_ports_or_schemes(self):
+        tool = hyperion.Hyperion()
+        for location in ("http://127.0.0.1:3457/", "https://127.0.0.1:3456/"):
+            with self.subTest(location=location), patch.object(hyperion.http.client, "HTTPConnection") as factory:
+                response = factory.return_value.getresponse.return_value
+                response.status = 302
+                response.getheaders.return_value = [("Location", location)]
+                result = tool._probe_single_sync("http", "127.0.0.1", 3456, "127.0.0.1",
+                    "/", "GET", {"Cookie": "synthetic"}, 1, follow_redirects=True)
+                self.assertEqual(result[0], 302)
+                self.assertEqual(factory.call_count, 1)
+                self.assertEqual(factory.return_value.request.call_count, 1)
+
     def test_no_samples_cannot_pass(self):
         async def no_samples(**kwargs):
             return [], 0.1, False

@@ -549,7 +549,10 @@ class Hyperion(VibeTool):
                     loc = resp_headers["location"]
                     u = urllib.parse.urlsplit(loc)
                     if u.scheme in ("http", "https") and u.hostname:
-                        if u.hostname.lower() == (cur_sni or cur_connect_host).lower():
+                        next_port = u.port if u.port is not None else (443 if u.scheme == "https" else 80)
+                        current_port = cur_port if cur_port is not None else (443 if cur_scheme == "https" else 80)
+                        if (u.hostname.lower() == (cur_sni or cur_connect_host).lower()
+                                and u.scheme.lower() == cur_scheme and next_port == current_port):
                             cur_scheme = u.scheme.lower()
                             cur_port = u.port
                             cur_path = (u.path or "/") + (f"?{u.query}" if u.query else "")
@@ -1458,7 +1461,7 @@ def main(argv=None):
         "--follow-redirects",
         action="store_true",
         default=True,
-        help="Follow canonical 301/302/307/308 redirects during preflight (default: enabled)",
+        help="Follow same-origin 301/302/307/308 redirects during preflight (default: enabled)",
     )
     parser.add_argument("--no-follow-redirects", dest="follow_redirects", action="store_false", help="Do not follow redirects during preflight")
     parser.add_argument("--sni", default="", help="Custom TLS SNI hostname override (for Cloudflare/Vercel/AWS custom origins)")
