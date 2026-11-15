@@ -9,7 +9,9 @@
     {
       "samAccountName": "lab-admin",
       "userAccountControl": 4259840,
-      "memberOf": ["CN=Domain Admins,CN=Users,DC=lab,DC=example"]
+      "memberOf": [
+        "CN=Domain Admins,CN=Users,DC=lab,DC=example"
+      ]
     },
     {
       "samAccountName": "svc-lab",
@@ -25,6 +27,24 @@
     {
       "samAccountName": "LAB-WEB$",
       "userAccountControl": 524288
+    }
+  ],
+  "entryPrincipals": [
+    "LAB\\\\Analyst"
+  ],
+  "tierZero": [
+    "LAB\\\\Domain Admins"
+  ],
+  "controlEdges": [
+    {
+      "from": "LAB\\\\Analyst",
+      "to": "LAB\\\\Helpdesk",
+      "right": "AddMember"
+    },
+    {
+      "from": "LAB\\\\Helpdesk",
+      "to": "LAB\\\\Domain Admins",
+      "right": "GenericAll"
     }
   ]
 }
