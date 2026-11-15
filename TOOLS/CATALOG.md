@@ -142,3 +142,17 @@ Candidates to split into a separate `network/` toolkit.
 _Web-app pentest tools + demos + reporting/session utilities in `TOOLS/`, plus
 the Go `maelstrom` load tester. The plan/subscription system has been removed —
 the only gates are the load-test allowlist and the `locked` typed-confirmation._
+
+
+---
+
+## MAEL security divisions (new)
+
+| Entry point | Module | Purpose |
+|---|---|---|
+| `python TOOLS/mael_suite.py web <url>` | WEBSTRIKE | Single-request web header/cookie baseline; local/private by default |
+| `python TOOLS/mael_suite.py ad <snapshot.json>` | DOMAINOPS | Offline AD security-flag and ACL tier-zero control-path analysis |
+| `python TOOLS/mael_suite.py crash` | EXPLOITLAB | Local AddressSanitizer crash-reproduction demonstration |
+| `python TOOLS/mael_suite.py range` | CYBERRANGE | Docker Compose commands for the isolated NovaChat training environment |
+
+Full operator documentation: [MAEL/README.md](../MAEL/README.md).
