@@ -43,6 +43,12 @@ Schema (subset):
 }
 ```
 
+Exported ACL control-path analysis also supports `entryPrincipals`, `tierZero`,
+and `controlEdges` with `from`, `to`, and `right` fields. Supported
+rights are GenericAll, WriteDacl, WriteOwner, AddMember,
+ForceChangePassword and DCSync. Paths are hypotheses inferred from
+exported permissions, not evidence of successful privilege escalation.
+
 Flags reviewed include password-not-required (0x20), disabled accounts (0x2),
 password-never-expires (0x10000), Kerberos preauthentication disabled
 (0x400000), unconstrained delegation (0x80000), and protocol transition
