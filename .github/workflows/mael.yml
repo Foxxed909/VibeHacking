@@ -1,0 +1,39 @@
+name: MAEL security divisions
+on:
+  pull_request:
+    paths:
+      - "MAEL/**"
+      - "TOOLS/mael_suite.py"
+      - ".github/workflows/mael.yml"
+  push:
+    branches: [main]
+    paths:
+      - "MAEL/**"
+      - "TOOLS/mael_suite.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Syntax-check modules
+        run: python -m compileall -q MAEL TOOLS/mael_suite.py
+      - name: MAEL unit tests
+        run: python -m unittest MAEL.tests -v
+      - name: CLI smoke checks
+        run: |
+          python TOOLS/mael_suite.py --help
+          python TOOLS/mael_suite.py ad MAEL/examples/ad_snapshot.json
+      - name: Compile C laboratory program
+        run: cc -O0 -g -fsanitize=address MAEL/crash_demo.c -o /tmp/mael_crash_demo

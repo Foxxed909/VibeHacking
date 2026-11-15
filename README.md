@@ -330,3 +330,24 @@ Useful for:
 ---
 
 *Built for fun. Built for learning. Built by us, for us.* 🚀
+
+
+---
+
+## MAEL security divisions (WEBSTRIKE / DOMAINOPS / EXPLOITLAB / CYBERRANGE)
+
+A new set of additive, standard-library modules covers scoped web response
+assessment, offline Active Directory and ACL control-path analysis, local
+AddressSanitizer crash research, and a Docker-isolated NovaChat range.
+
+```bash
+python TOOLS/mael_suite.py --help
+python TOOLS/mael_suite.py web http://127.0.0.1:3456/
+python TOOLS/mael_suite.py ad MAEL/examples/ad_snapshot.json
+python TOOLS/mael_suite.py crash
+docker compose -f MAEL/compose.yaml up --build -d
+python -m unittest MAEL.tests -v
+```
+
+See [MAEL/README.md](MAEL/README.md) for scope, lab configuration,
+inputs, output schemas, and testing.
