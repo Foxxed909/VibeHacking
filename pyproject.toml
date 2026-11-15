@@ -14,9 +14,11 @@ dependencies = []
 vibe = "vb.cli:main"
 vbh = "vb.cli:main"
 vibe-hack = "vb.cli:main"
+vhx = "vibe_ext.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["vb*"]
+include = ["vb*", "vibe_ext*"]
 
 [tool.vercel]
 entrypoint = "app:app"
+
