@@ -56,6 +56,8 @@ class DomainOpsTests(unittest.TestCase):
         self.assertIn("AD_UNCONSTRAINED_DELEGATION", codes)
         self.assertIn("AD_NO_LOCKOUT", codes)
         self.assertIn("AD_PASSWORD_NOT_REQUIRED", codes)
+        self.assertIn("AD_TIER_ZERO_CONTROL_PATH", codes)
+        self.assertEqual(1, len(report["controlPaths"]))
 
     def test_bad_schema_rejected(self):
         with self.assertRaises(ValueError):
