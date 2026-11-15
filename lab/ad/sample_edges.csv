@@ -1,0 +1,7 @@
+source,target,relationship
+alice,Helpdesk,member_of
+Helpdesk,Server Operators,member_of
+Server Operators,Domain Admins,generic_all
+bob,Employees,member_of
+Employees,All Staff,member_of
+

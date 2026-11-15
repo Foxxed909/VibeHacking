@@ -1,0 +1,20 @@
+services:
+  novachat:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+    ports:
+      - "127.0.0.1:3456:3456"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    networks:
+      - lab_isolated
+
+networks:
+  lab_isolated:
+    internal: true
+
