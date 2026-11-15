@@ -1,0 +1,26 @@
+services:
+  novachat:
+    build:
+      context: ..
+      dockerfile: MAEL/Dockerfile
+    ports:
+      - "127.0.0.1:3456:3456"
+    networks:
+      - isolated_lab
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 256m
+    init: true
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3456/', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  isolated_lab:
+    internal: true
