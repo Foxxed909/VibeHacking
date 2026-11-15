@@ -108,6 +108,41 @@ UAC_DONT_REQ_PREAUTH = 0x400000
 UAC_TRUSTED_TO_AUTH_FOR_DELEGATION = 0x1000000
 
 
+def analyze_control_paths(snapshot):
+    """Discover declared control paths to tier-zero objects in exported ACL data."""
+    from collections import defaultdict, deque
+    edges = defaultdict(list)
+    allowed = {"GenericAll", "WriteDacl", "WriteOwner", "AddMember",
+               "ForceChangePassword", "DCSync"}
+    for edge in snapshot.get("controlEdges", []):
+        if not isinstance(edge, dict):
+            raise ValueError("controlEdges entries must be objects")
+        source, destination = str(edge.get("from", "")), str(edge.get("to", ""))
+        right = str(edge.get("right", ""))
+        if source and destination and right in allowed:
+            edges[source].append((destination, right))
+    targets = set(str(x) for x in snapshot.get("tierZero", []))
+    result = []
+    for entry in snapshot.get("entryPrincipals", []):
+        entry = str(entry)
+        queue = deque([(entry, [])])
+        visited = {entry}
+        while queue:
+            principal, path = queue.popleft()
+            if principal in targets and path:
+                result.append({"entry": entry, "tierZero": principal, "hops": path})
+                continue
+            if len(path) >= 5:
+                continue
+            for next_principal, right in edges[principal]:
+                if next_principal not in visited:
+                    visited.add(next_principal)
+                    queue.append((next_principal, path + [{"from": principal,
+                                                            "to": next_principal,
+                                                            "right": right}]))
+    return result
+
+
 def audit_ad(snapshot):
     """Read-only, offline analysis of a sanitized AD export (never contacts DCs)."""
     if not isinstance(snapshot, dict):
@@ -157,7 +192,13 @@ def audit_ad(snapshot):
                 findings.append(finding("AD_DELEGATION_TARGETS", "info", account,
                                         "Constrained delegation targets configured",
                                         "Verify each delegation target is justified and least-privileged"))
-    return {"module": "DOMAINOPS", "findings": findings, "count": len(findings)}
+    paths = analyze_control_paths(snapshot)
+    for path in paths:
+        findings.append(finding("AD_TIER_ZERO_CONTROL_PATH", "high", path["entry"],
+                                "Exported permissions indicate a control path to " + path["tierZero"],
+                                "Validate each ACL hop and remove unnecessary control rights"))
+    return {"module": "DOMAINOPS", "findings": findings,
+            "count": len(findings), "controlPaths": paths}
 
 
 def crash_exercise(compiler=None):
