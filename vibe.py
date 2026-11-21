@@ -7,12 +7,14 @@ import json
 import ipaddress
 import re
 import time
+import tempfile
+from datetime import datetime, timezone
 import urllib.parse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(ROOT_DIR, "TOOLS")
 sys.path.insert(0, TOOLS_DIR)
-from privacy_guard import privacy_summary_lines, sanitize_data, sanitize_text
+from privacy_guard import privacy_enabled, privacy_summary_lines, sanitize_data, sanitize_text
 
 
 def _read_version():
@@ -88,7 +90,7 @@ def _write_session(url):
     if session_dir:
         os.makedirs(session_dir, exist_ok=True)
     with open(session_path, "w", encoding="utf-8") as f:
-        json.dump(sanitize_data({"target": url, "last_scan": str(os.times())}), f)
+        json.dump({"target": sanitize_text(url), "last_scan": datetime.now(timezone.utc).isoformat()}, f)
 
 
 def _dedupe_keep_order(values):
@@ -160,6 +162,8 @@ def _external_multi_warning(command, targets, assume_yes=False):
 
 
 def _target_slug(index, url):
+    if privacy_enabled():
+        return f"target-{index:02d}"
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or "target"
     port = f"-{parsed.port}" if parsed.port else ""
@@ -343,8 +347,9 @@ def _run_multi(args):
     jobs = min(jobs, len(targets))
 
     run_id = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(ROOT_DIR, "logs", "multi", f"{args.multi_command}-{run_id}")
-    os.makedirs(run_dir, exist_ok=True)
+    runs_root = os.path.join(ROOT_DIR, "logs", "multi")
+    os.makedirs(runs_root, exist_ok=True)
+    run_dir = tempfile.mkdtemp(prefix=f"{args.multi_command}-{run_id}-", dir=runs_root)
 
     scope = "authorized external" if non_local else "local/private"
     print(f"[*] {scope} multi {args.multi_command}: {len(targets)} target(s), jobs={jobs}")
@@ -559,7 +564,7 @@ def run_vibe():
     subparsers = parser.add_subparsers(dest="command")
 
     # Command: scan
-    scan_parser = subparsers.add_parser("scan", help="Run an automated security audit on a URL")
+    scan_parser = subparsers.add_parser("scan", help="Run an audit and return nonzero if any check exits nonzero")
     scan_parser.add_argument("url", help="Target URL (e.g. http://127.0.0.1:5500/)")
 
     # Command: attack — full ordered kill-chain (every audit tool, then gated load phase)
@@ -823,30 +828,27 @@ def run_vibe():
         # Save current target to session
         _write_session(url)
 
-        # Chain together multiple tools for a "Deep Scan" (Zero-Credential Attacker Mode)
-        print("[*] Phase 0: AI-Agent & Zero-Key Bot-Gate Breaker (Bot Breaker)...")
-        run_tool(["TOOLS/bot_breaker.py", "--url", url])
-
-        print("[*] Phase 1: Domain Recon (Ash)...")
-        run_tool(["TOOLS/ash.py", "--url", url])
-
-        print("[*] Phase 2: Cloud & Edge Architecture Prober (Cloudflare / AWS / Vercel)...")
-        run_tool(["TOOLS/cloud_scout.py", "--url", url])
-
-        print("[*] Phase 3: Header Security Audit...")
-        run_tool(["TOOLS/vibe_headers.py", "--url", url])
-
-        print("[*] Phase 4: Hidden Asset Discovery (Ghost)...")
-        run_tool(["TOOLS/ghost.py", "--url", url])
-
-        print("[*] Phase 5: Next.js / Vercel RSC & Middleware Audit (CVE-2025-29927)...")
-        run_tool(["TOOLS/nextjs_rsc_audit.py", "--url", url])
-
-        print("[*] Phase 6: Asymmetric 'Origin-Killer & Wallet-Drainer' Probe...")
-        run_tool(["TOOLS/asymmetric_probe.py", "--url", url])
-
-        print("[*] Phase 7: Logic Flow Audit (Leep)...")
-        run_tool(["TOOLS/leep.py", "--url", url])
+        phases = [
+            ("[*] Phase 0: AI-Agent & Zero-Key Bot-Gate Breaker (Bot Breaker)...", "TOOLS/bot_breaker.py"),
+            ("[*] Phase 1: Domain Recon (Ash)...", "TOOLS/ash.py"),
+            ("[*] Phase 2: Cloud & Edge Architecture Prober (Cloudflare / AWS / Vercel)...", "TOOLS/cloud_scout.py"),
+            ("[*] Phase 3: Header Security Audit...", "TOOLS/vibe_headers.py"),
+            ("[*] Phase 4: Hidden Asset Discovery (Ghost)...", "TOOLS/ghost.py"),
+            ("[*] Phase 5: Next.js / Vercel RSC & Middleware Audit (CVE-2025-29927)...", "TOOLS/nextjs_rsc_audit.py"),
+            ("[*] Phase 6: Asymmetric 'Origin-Killer & Wallet-Drainer' Probe...", "TOOLS/asymmetric_probe.py"),
+            ("[*] Phase 7: Logic Flow Audit (Leep)...", "TOOLS/leep.py"),
+        ]
+        failed = []
+        for description, tool in phases:
+            print(description)
+            code = run_tool([tool, "--url", url]).returncode
+            if code == 130:
+                return 130
+            if code:
+                failed.append(f"{os.path.basename(tool)} ({code})")
+        if failed:
+            print("[-] Scan checks returned nonzero: " + ", ".join(failed))
+            return 1
 
         print("\n[+] Scan Sequence Complete. See logs/ for detailed findings.")
 
@@ -933,8 +935,11 @@ def run_vibe():
 
     elif args.command == "report":
         print("[*] Compiling Real-Time Executive Dashboard...")
-        run_tool(["TOOLS/lmx.py"])
-        run_tool(["TOOLS/sarif_export.py"])
+        dashboard = run_tool(["TOOLS/lmx.py"])
+        if dashboard.returncode == 130:
+            return 130
+        sarif = run_tool(["TOOLS/sarif_export.py"])
+        return dashboard.returncode or sarif.returncode
 
     elif args.command == "sarif":
         print("[*] Exporting Enterprise SARIF 2.1.0 & JUnit XML Reports...")
