@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from privacy_guard import sanitize_text
-from vibe_core import DEFAULT_TOOL_TAXONOMY, FRAMEWORK_VERSION, VibeTool
+from vibe_core import FRAMEWORK_VERSION, VibeTool
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -105,7 +105,6 @@ class SarifExporter(VibeTool):
                 tool_stem = base.replace("_session.log", "")
                 if tool_stem in ("lmx", "sarif_exporter", "sarif exporter"):
                     continue
-                tax = DEFAULT_TOOL_TAXONOMY.get(tool_stem.replace("_", " "), {"cwe": "CWE-200", "owasp": "A05:2021"})
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as fh:
                         for line in fh:
@@ -126,8 +125,8 @@ class SarifExporter(VibeTool):
                                     "location": sanitize_text(session_target),
                                     "evidence": sanitize_text(msg),
                                     "recommendation": "Review the affected endpoint and apply defense-in-depth controls.",
-                                    "cwe": tax.get("cwe", "CWE-200"),
-                                    "owasp": tax.get("owasp", "A05:2021"),
+                                    "cwe": "unclassified",
+                                    "owasp": "unclassified",
                                 })
                 except OSError:
                     pass
