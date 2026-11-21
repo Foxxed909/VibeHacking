@@ -86,7 +86,6 @@ class Phantom(VibeTool):
         if "kid" in jwt_header and ("/" in str(jwt_header["kid"]) or ".." in str(jwt_header["kid"])):
             issues.append(("JWT header 'kid' contains path characters — potential kid traversal/injection", "warn"))
 
-        self.update_surface(jwt_tokens=[token])
         return issues
 
     def _analyze_cookie(self, raw, is_https=True):
