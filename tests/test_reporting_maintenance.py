@@ -1,5 +1,6 @@
 """Offline tests for report integrity and release metadata."""
 import json
+import os
 import re
 import sys
 import tempfile
@@ -55,6 +56,23 @@ class ReportingMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["cwe"], "unclassified")
         self.assertEqual(findings[0]["owasp"], "unclassified")
+
+
+    def test_structured_input_redacted_and_non_objects_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp) / "logs"
+            logs.mkdir()
+            row = {"tool": "Example", "title": "Synthetic finding",
+                   "location": "https://example.invalid/", "evidence": "token=fake-value"}
+            (logs / "findings.jsonl").write_text(
+                "null\n[]\n" + json.dumps(row) + "\n", encoding="utf-8")
+            with patch.dict(os.environ, {"VIBE_PRIVACY_MODE": "on"}), patch.object(
+                sarif_export, "_root", tmp
+            ):
+                findings = self.exporter._collect_findings(str(logs))
+            self.assertEqual(len(findings), 1)
+            self.assertNotIn("fake-value", findings[0]["evidence"])
+            self.assertNotIn("example.invalid", findings[0]["location"])
 
 
 if __name__ == "__main__":
