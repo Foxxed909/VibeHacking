@@ -7,12 +7,14 @@ import json
 import ipaddress
 import re
 import time
+import tempfile
+from datetime import datetime, timezone
 import urllib.parse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(ROOT_DIR, "TOOLS")
 sys.path.insert(0, TOOLS_DIR)
-from privacy_guard import privacy_summary_lines, sanitize_data, sanitize_text
+from privacy_guard import privacy_enabled, privacy_summary_lines, sanitize_data, sanitize_text
 
 
 def _read_version():
@@ -88,7 +90,7 @@ def _write_session(url):
     if session_dir:
         os.makedirs(session_dir, exist_ok=True)
     with open(session_path, "w", encoding="utf-8") as f:
-        json.dump(sanitize_data({"target": url, "last_scan": str(os.times())}), f)
+        json.dump(sanitize_data({"target": url, "last_scan": datetime.now(timezone.utc).isoformat()}), f)
 
 
 def _dedupe_keep_order(values):
@@ -160,6 +162,8 @@ def _external_multi_warning(command, targets, assume_yes=False):
 
 
 def _target_slug(index, url):
+    if privacy_enabled():
+        return f"target-{index:02d}"
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or "target"
     port = f"-{parsed.port}" if parsed.port else ""
@@ -343,8 +347,9 @@ def _run_multi(args):
     jobs = min(jobs, len(targets))
 
     run_id = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(ROOT_DIR, "logs", "multi", f"{args.multi_command}-{run_id}")
-    os.makedirs(run_dir, exist_ok=True)
+    runs_root = os.path.join(ROOT_DIR, "logs", "multi")
+    os.makedirs(runs_root, exist_ok=True)
+    run_dir = tempfile.mkdtemp(prefix=f"{args.multi_command}-{run_id}-", dir=runs_root)
 
     scope = "authorized external" if non_local else "local/private"
     print(f"[*] {scope} multi {args.multi_command}: {len(targets)} target(s), jobs={jobs}")
@@ -933,8 +938,11 @@ def run_vibe():
 
     elif args.command == "report":
         print("[*] Compiling Real-Time Executive Dashboard...")
-        run_tool(["TOOLS/lmx.py"])
-        run_tool(["TOOLS/sarif_export.py"])
+        dashboard = run_tool(["TOOLS/lmx.py"])
+        if dashboard.returncode == 130:
+            return 130
+        sarif = run_tool(["TOOLS/sarif_export.py"])
+        return dashboard.returncode or sarif.returncode
 
     elif args.command == "sarif":
         print("[*] Exporting Enterprise SARIF 2.1.0 & JUnit XML Reports...")
