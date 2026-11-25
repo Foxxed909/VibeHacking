@@ -1,0 +1,29 @@
+name: Offline source benchmark
+on:
+  pull_request:
+    branches: [internal]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-health:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Benchmark regression tests
+        run: python -m unittest discover -s tests -p 'test_source_benchmark.py' -v
+      - name: Source-only inventory and compilation report
+        run: python TOOLS/benchmark.py --code > benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-health-${{ matrix.python-version }}
+          path: benchmark.json
+          if-no-files-found: ignore
