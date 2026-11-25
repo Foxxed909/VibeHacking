@@ -153,6 +153,7 @@ Turn findings into receipts; manage the workspace.
 | Tool | Role |
 |------|------|
 | `lmx` | Executive security-dashboard generator (`vibe.py report`) |
+| `sarif_export` | Offline SARIF 2.1.0, JUnit XML and JSON reporting from existing audit artifacts; preserves supplied classifications and labels unknown ones as unclassified. |
 | `poc_gen` | Exploit proof-of-concept generator |
 | `backer` | Session-data backup utility |
 | `seagull` | Log-noise filter — strips info chatter, keeps warnings/criticals |
