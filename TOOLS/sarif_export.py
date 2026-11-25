@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from privacy_guard import sanitize_text
-from vibe_core import DEFAULT_TOOL_TAXONOMY, FRAMEWORK_VERSION, VibeTool
+from vibe_core import FRAMEWORK_VERSION, VibeTool
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -105,7 +105,6 @@ class SarifExporter(VibeTool):
                 tool_stem = base.replace("_session.log", "")
                 if tool_stem in ("lmx", "sarif_exporter", "sarif exporter"):
                     continue
-                tax = DEFAULT_TOOL_TAXONOMY.get(tool_stem.replace("_", " "), {"cwe": "CWE-200", "owasp": "A05:2021"})
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as fh:
                         for line in fh:
@@ -126,8 +125,8 @@ class SarifExporter(VibeTool):
                                     "location": sanitize_text(session_target),
                                     "evidence": sanitize_text(msg),
                                     "recommendation": "Review the affected endpoint and apply defense-in-depth controls.",
-                                    "cwe": tax.get("cwe", "CWE-200"),
-                                    "owasp": tax.get("owasp", "A05:2021"),
+                                    "cwe": "unclassified",
+                                    "owasp": "unclassified",
                                 })
                 except OSError:
                     pass
@@ -137,7 +136,7 @@ class SarifExporter(VibeTool):
     @staticmethod
     def _rule_id(finding):
         tool_slug = re.sub(r"[^A-Za-z0-9]+", "-", str(finding.get("tool", "vibe"))).strip("-").upper()
-        cwe = str(finding.get("cwe", "CWE-200")).upper()
+        cwe = str((finding.get("cwe") or "unclassified")).upper()
         return f"VIBE-{tool_slug}-{cwe}"
 
     def build_sarif(self, findings):
@@ -147,8 +146,8 @@ class SarifExporter(VibeTool):
         for f in findings:
             rule_id = self._rule_id(f)
             sev = str(f.get("severity", "medium")).lower()
-            cwe = str(f.get("cwe", "CWE-200"))
-            owasp = str(f.get("owasp", "A05:2021"))
+            cwe = str((f.get("cwe") or "unclassified"))
+            owasp = str((f.get("owasp") or "unclassified"))
 
             if rule_id not in rules_map:
                 rules_map[rule_id] = {
@@ -159,8 +158,7 @@ class SarifExporter(VibeTool):
                         "text": f"Automated black-box security check by {f.get('tool', 'VibeTool')} mapped to {cwe} / {owasp}."
                     },
                     "properties": {
-                        "tags": ["security", "black-box", cwe, owasp],
-                        "precision": "high",
+                        "tags": ["security", "black-box"] + [tag for tag in (cwe, owasp) if tag != "unclassified"],
                     },
                 }
 
@@ -231,7 +229,7 @@ class SarifExporter(VibeTool):
                 fail = ET.SubElement(
                     tc,
                     "failure",
-                    type=f"{f.get('cwe', 'CWE-200')} ({f.get('owasp', 'OWASP')})",
+                    type=f"{(f.get('cwe') or 'unclassified')} ({(f.get('owasp') or 'unclassified')})",
                     message=str(f.get("title", "")),
                 )
                 fail.text = (
