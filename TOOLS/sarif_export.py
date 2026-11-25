@@ -19,7 +19,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from privacy_guard import sanitize_text
+from privacy_guard import sanitize_text, sanitize_data
 from vibe_core import FRAMEWORK_VERSION, VibeTool
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,7 +62,10 @@ class SarifExporter(VibeTool):
                             item = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        if item.get("tool", "").lower() == "sarif exporter":
+                        if not isinstance(item, dict):
+                            continue
+                        item = sanitize_data(item)
+                        if str(item.get("tool", "")).lower() == "sarif exporter":
                             continue
                         key = (item.get("tool", ""), item.get("title", ""), item.get("location", ""))
                         if key not in seen:
