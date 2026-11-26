@@ -90,7 +90,7 @@ def _write_session(url):
     if session_dir:
         os.makedirs(session_dir, exist_ok=True)
     with open(session_path, "w", encoding="utf-8") as f:
-        json.dump(sanitize_data({"target": url, "last_scan": datetime.now(timezone.utc).isoformat()}), f)
+        json.dump({"target": sanitize_text(url), "last_scan": datetime.now(timezone.utc).isoformat()}, f)
 
 
 def _dedupe_keep_order(values):
