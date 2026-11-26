@@ -5,12 +5,16 @@ import re
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "TOOLS"))
 import sarif_export
+sys.path.insert(0, str(ROOT))
+import vibe
 
 
 class ReportingMaintenanceTests(unittest.TestCase):
@@ -73,6 +77,30 @@ class ReportingMaintenanceTests(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertNotIn("fake-value", findings[0]["evidence"])
             self.assertNotIn("example.invalid", findings[0]["location"])
+
+
+    def test_session_metadata_has_utc_timestamp_and_redacted_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session.json"
+            with patch.dict(os.environ, {"VIBE_PRIVACY_MODE": "on",
+                                         "VIBE_SESSION_FILE": str(session)}):
+                vibe._write_session("https://example.invalid/?token=fake-value")
+            metadata = json.loads(session.read_text(encoding="utf-8"))
+        self.assertNotIn("example.invalid", metadata["target"])
+        self.assertNotIn("fake-value", metadata["target"])
+        self.assertEqual(datetime.fromisoformat(metadata["last_scan"]).tzinfo, timezone.utc)
+
+    def test_private_artifact_name_contains_no_target_details(self):
+        with patch.dict(os.environ, {"VIBE_PRIVACY_MODE": "on"}):
+            self.assertEqual(vibe._target_slug(3, "https://example.invalid/private"), "target-03")
+
+    def test_reporting_returns_failure_without_running_subprocesses(self):
+        for codes, expected in [([0, 2], 2), ([1, 0], 1), ([130], 130)]:
+            with self.subTest(codes=codes), patch.object(sys, "argv", ["vibe", "report"]), patch.object(
+                vibe, "run_tool", side_effect=[CompletedProcess([], code) for code in codes]
+            ) as run:
+                self.assertEqual(vibe.run_vibe(), expected)
+                self.assertEqual(run.call_count, len(codes))
 
 
 if __name__ == "__main__":
