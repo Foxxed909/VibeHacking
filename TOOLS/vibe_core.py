@@ -379,7 +379,7 @@ class VibeTool:
             return False
         return (body or "") == baseline.get("body", "")
 
-    def safe_request(self, url, method='GET', data=None, headers=None):
+    def safe_request(self, url, method='GET', data=None, headers=None, timeout=10):
         if headers is None:
             headers = {}
         else:
@@ -407,7 +407,7 @@ class VibeTool:
                 headers['Content-Type'] = 'application/json'
 
             req = urllib.request.Request(url, method=method, data=body, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.getcode(), response.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(response.info())
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode('utf-8', errors='ignore'), _CaseInsensitiveHeaders(e.headers)

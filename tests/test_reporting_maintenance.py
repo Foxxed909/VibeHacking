@@ -104,6 +104,20 @@ class ReportingMaintenanceTests(unittest.TestCase):
 
 
 
+    def test_safe_request_preserves_default_and_accepts_timeout(self):
+        from vibe_core import VibeTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"VIBE_SESSION_FILE": str(Path(tmp) / "session.json"),
+                                         "VIBE_LOG_DIR": str(Path(tmp) / "logs")}):
+                tool = VibeTool("fixture", "offline regression")
+                with patch("vibe_core.urllib.request.urlopen",
+                           side_effect=TimeoutError("fixture timeout")) as opener:
+                    self.assertEqual(tool.safe_request("https://example.invalid/")[0], 0)
+                    self.assertEqual(opener.call_args.kwargs["timeout"], 10)
+                    self.assertEqual(tool.safe_request("https://example.invalid/", timeout=2)[0], 0)
+                    self.assertEqual(opener.call_args.kwargs["timeout"], 2)
+
     def test_surface_summary_does_not_retain_reusable_data(self):
         from vibe_core import VibeTool
 
