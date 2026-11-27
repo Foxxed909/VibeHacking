@@ -324,6 +324,38 @@ class VibeTool:
                 return {}
         return {}
 
+@staticmethod
+    def _surface_summary(session):
+        """Return only non-sensitive observation counts, never reusable values."""
+        if not isinstance(session, dict):
+            return {}
+        summary = session.get("surface_summary", {})
+        if not isinstance(summary, dict):
+            return {}
+        keys = ("endpoint_count", "form_count", "jwt_count", "tech_count")
+        return {key: summary[key] for key in keys
+                if type(summary.get(key)) is int and summary[key] >= 0}
+
+    def get_surface(self):
+        """Read summary metadata without exposing legacy shared credentials."""
+        return self._surface_summary(self.load_session())
+
+    def update_surface(self, endpoints=None, forms=None, jwt_tokens=None, tech=None):
+        """Record observation counts; do not persist routes, tokens or profiles."""
+        session = self.load_session()
+        if not isinstance(session, dict):
+            session = {}
+        summary = self._surface_summary(session)
+        for key, values in (("endpoint_count", endpoints), ("form_count", forms),
+                            ("jwt_count", jwt_tokens), ("tech_count", tech)):
+            if isinstance(values, (list, tuple)):
+                summary[key] = len(values)
+        # Discard the old unscoped cache instead of reintroducing credential reuse.
+        session.pop("surface", None)
+        session["surface_summary"] = summary
+        self.save_session(session)
+
+
     def baseline_probe(self, base_url, timeout=5):
         """Token-probe baseline: fires a random path, returns dict(catch_all, length, body, url, status)."""
         token = "vibe-baseline-%s" % datetime.datetime.now().strftime("%H%M%S%f")

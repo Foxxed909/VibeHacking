@@ -103,5 +103,55 @@ class ReportingMaintenanceTests(unittest.TestCase):
                 self.assertEqual(run.call_count, len(codes))
 
 
+
+    def test_surface_summary_does_not_retain_reusable_data(self):
+        from vibe_core import VibeTool
+
+        for privacy_mode in ("on", "off"):
+            with self.subTest(privacy_mode=privacy_mode), tempfile.TemporaryDirectory() as tmp:
+                session = Path(tmp) / "session.json"
+                session.write_text(json.dumps({
+                    "marker": "preserve-me",
+                    "surface": {
+                        "jwt_tokens": ["legacy-fixture-token"],
+                        "endpoints": ["https://example.invalid/private"],
+                        "agent_profile": {"cookies": "legacy-fixture-cookie"},
+                    },
+                    "surface_summary": {"jwt_count": 4, "jwt_tokens": ["invalid"]},
+                }), encoding="utf-8")
+                with patch.dict(os.environ, {
+                    "VIBE_PRIVACY_MODE": privacy_mode,
+                    "VIBE_SESSION_FILE": str(session),
+                    "VIBE_LOG_DIR": str(Path(tmp) / "logs"),
+                }):
+                    tool = VibeTool("fixture", "offline regression")
+                    self.assertEqual(tool.get_surface(), {"jwt_count": 4})
+                    tool.update_surface(endpoints=["fixture-route"], forms=["fixture-form"],
+                                        jwt_tokens=["new-fixture-token"])
+                    tool.update_surface(tech=["fixture-tech"])
+                    self.assertEqual(tool.get_surface(), {
+                        "endpoint_count": 1, "form_count": 1, "jwt_count": 1, "tech_count": 1,
+                    })
+                persisted = session.read_text(encoding="utf-8")
+                self.assertEqual(json.loads(persisted)["marker"], "preserve-me")
+                self.assertNotIn("surface", json.loads(persisted))
+                for value in ("legacy-fixture-token", "legacy-fixture-cookie", "new-fixture-token",
+                              "fixture-route", "fixture-form", "fixture-tech", "example.invalid"):
+                    self.assertNotIn(value, persisted)
+
+    def test_surface_summary_handles_non_object_sessions(self):
+        from vibe_core import VibeTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "session.json"
+            session.write_text("[]", encoding="utf-8")
+            with patch.dict(os.environ, {"VIBE_SESSION_FILE": str(session),
+                                         "VIBE_LOG_DIR": str(Path(tmp) / "logs")}):
+                tool = VibeTool("fixture", "offline regression")
+                self.assertEqual(tool.get_surface(), {})
+                tool.update_surface(tech=["fixture"])
+                self.assertEqual(tool.get_surface(), {"tech_count": 1})
+
+
 if __name__ == "__main__":
     unittest.main()
