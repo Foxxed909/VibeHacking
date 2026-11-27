@@ -301,6 +301,35 @@ class VibeTool:
         except OSError:
             pass
 
+    def record_finding(self, title, severity="medium", location="", evidence="",
+                       recommendation="", cwe="", owasp="", _from_log=False):
+        """Append a structured finding using the configured privacy policy."""
+        level = str(severity).strip().lower()
+        if level not in ("critical", "high", "medium", "low", "info"):
+            level = "medium"
+        session = self.load_session()
+        target = location or (session.get("target", "") if isinstance(session, dict) else "")
+        entry = sanitize_data({
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "tool": str(self.name),
+            "title": str(title),
+            "severity": level,
+            "location": str(target),
+            "evidence": str(evidence or ""),
+            "recommendation": str(recommendation or ""),
+            "cwe": str(cwe or "unclassified"),
+            "owasp": str(owasp or "unclassified"),
+            "auto_captured": bool(_from_log),
+        })
+        path = os.environ.get("VIBE_FINDINGS_FILE") or os.path.join(self.log_dir, "findings.jsonl")
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as output:
+                output.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass
+        return entry
+
     def banner(self):
         print("================================")
         print(f" \U0001f6e1\ufe0f {self.name.upper()} v{self.version}")

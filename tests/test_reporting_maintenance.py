@@ -104,6 +104,26 @@ class ReportingMaintenanceTests(unittest.TestCase):
 
 
 
+    def test_record_finding_writes_redacted_jsonl_without_guessed_taxonomy(self):
+        from vibe_core import VibeTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "findings.jsonl"
+            with patch.dict(os.environ, {"VIBE_SESSION_FILE": str(Path(tmp) / "session.json"),
+                                         "VIBE_LOG_DIR": tmp,
+                                         "VIBE_FINDINGS_FILE": str(path),
+                                         "VIBE_PRIVACY_MODE": "on"}):
+                tool = VibeTool("fixture", "offline regression")
+                tool.save_session({"target": "https://example.invalid/"})
+                entry = tool.record_finding("fixture", severity="HIGH",
+                                            evidence="Authorization: Bearer fixture-secret")
+                row = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(row, entry)
+                self.assertEqual(row["severity"], "high")
+                self.assertEqual(row["cwe"], "unclassified")
+                self.assertEqual(row["owasp"], "unclassified")
+                self.assertNotIn("fixture-secret", row["evidence"])
+
     def test_safe_request_preserves_default_and_accepts_timeout(self):
         from vibe_core import VibeTool
 
