@@ -324,7 +324,7 @@ class VibeTool:
                 return {}
         return {}
 
-@staticmethod
+    @staticmethod
     def _surface_summary(session):
         """Return only non-sensitive observation counts, never reusable values."""
         if not isinstance(session, dict):
