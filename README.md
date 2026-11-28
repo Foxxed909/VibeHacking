@@ -194,6 +194,11 @@ real browser/device fingerprint.
 python vibe.py privacy
 ```
 
+Shared session observations retain counts only, not reusable credentials,
+cookies, request profiles, routes or form values. This applies even with
+privacy mode disabled. Legacy shared surface caches are ignored and removed
+on the next surface update.
+
 Network reality check: no app can honestly promise that a tester is completely
 untraceable by IP, DNS, hosting, ISP/VPN, or target-server logs. If tester
 identity must be separated from the target, route authorized tests through an
